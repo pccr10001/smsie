@@ -162,61 +162,40 @@ A `smsie.service` file is included for easier deployment on Linux systems using 
 
 ### Docker
 
-A `Dockerfile` is provided for containerized deployment.
+A `Dockerfile` is provided for containerized deployment, or you can use the pre-built image from GHCR.
 
-1.  **Build the Image:**
-
-    ```bash
-    docker build -t smsie .
-    ```
-
-2.  **Run the Container:**
+1.  **Run the Container:**
 
     ```bash
-    # Run with default config (sqlite in container)
-    docker run -d -p 8080:8080 --name smsie \
-      --device=/dev/ttyUSB0:/dev/ttyUSB0 \
-      -v smsie_data:/app/data \
-      smsie
-
-    # Run with custom config
-    docker run -d -p 8080:8080 --name smsie \
-      --device=/dev/ttyUSB0:/dev/ttyUSB0 \
-      -v $(pwd)/config.yaml:/app/config.yaml \
-      -v smsie_data:/app/data \
-      smsie
-    ```
-
-    > **Note on Serial Ports:** You must map the serial device (e.g., `--device=/dev/ttyUSB0:/dev/ttyUSB0`) for `smsie` to access the modem.
-
-    **Automatic Port Scanning (Advanced)**
-    To allow `smsie` to automatically discover and hot-plug new modems, you must run the container in privileged mode and map the entire `/dev` directory:
-
-    ```bash
+    # Run using GHCR image (Automatic Port Scanning enabled)
     docker run -d -p 8080:8080 --name smsie \
       --privileged \
       --device=/dev:/dev \
       -v smsie_data:/app/data \
-      smsie
+      ghcr.io/pccr10001/smsie:latest
     ```
+
+    > **Note:** To use a custom config, mount it with `-v $(pwd)/config.yaml:/app/config.yaml`.
 
 ### Docker Compose
 
-A `docker-compose.yml` is also provided. It is configured by default for **Automatic Port Scanning** (Privileged mode).
+A `docker-compose.yml` is provided using the GHCR image.
 
-1.  **Start the service:**
+1.  **Download `docker-compose.yml`:**
+    (Ensure you have the file from the repository)
+
+2.  **Start the service:**
 
     ```bash
     docker-compose up -d
     ```
 
-2.  **View Logs:**
+3.  **View Logs:**
 
     ```bash
     docker-compose logs -f
     ```
 
-3.  **Stop:**
     ```bash
     docker-compose down
     ```

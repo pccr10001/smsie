@@ -2,8 +2,7 @@ version: "3.8"
 
 services:
   smsie:
-    build: .
-    image: smsie:latest
+    image: ghcr.io/pccr10001/smsie:latest
     container_name: smsie
     restart: unless-stopped
     ports:

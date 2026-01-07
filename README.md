@@ -21,6 +21,10 @@
 
 - **Go 1.20+**
 - **Serial Drivers**: Ensure drivers for your modems are installed.
+  - Following modems are tested:
+    - Quectel EC20
+    - Quectel EC800M
+    - OpenLuat Air780E
 
 ## 📦 Installation
 

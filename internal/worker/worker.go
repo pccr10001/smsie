@@ -268,6 +268,10 @@ func (w *ModemWorker) initModem() {
 			}
 		}
 
+		if iccid != "" {
+			iccid = strings.TrimRight(strings.ToUpper(iccid), "F")
+		}
+
 		if iccid == "" {
 			logger.Log.Errorf("[%s] Failed to get ICCID", w.PortName)
 			return

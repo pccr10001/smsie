@@ -29,8 +29,6 @@ COPY --from=builder /app/smsie .
 
 # Copy static assets and template files
 COPY --from=builder /app/web ./web
-COPY --from=builder /app/mcc_mnc.json .
-COPY --from=builder /app/config.yaml.example ./config.yaml
 
 # Expose port
 EXPOSE 8080

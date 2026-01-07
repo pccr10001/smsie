@@ -97,7 +97,16 @@ func (w *ModemWorker) checkSignal() {
 			vals := strings.Split(strings.TrimSpace(parts[1]), ",")
 			if len(vals) > 0 {
 				fmt.Sscanf(vals[0], "%d", &rssi)
-				w.modem.SignalStrength = rssi
+
+				var signal int
+				if rssi == 99 {
+					signal = 0
+				} else {
+					// Convert 0-31 to 0-100%
+					signal = int(float64(rssi) / 31.0 * 100.0)
+				}
+
+				w.modem.SignalStrength = signal
 				w.repo.Upsert(w.modem)
 			}
 		}

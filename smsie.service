@@ -1,0 +1,19 @@
+[Unit]
+Description=SMS Dashboard (smsie)
+After=network.target
+
+[Service]
+# User/Group to run as. Recommended to create a dedicated user.
+# User=smsie
+# Group=smsie
+# Set WorkingDirectory to where you extracted the release
+WorkingDirectory=/opt/smsie
+ExecStart=/opt/smsie/smsie
+Restart=always
+RestartSec=5
+# Ensure logs are viewable via journalctl
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

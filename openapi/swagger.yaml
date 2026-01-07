@@ -1,0 +1,464 @@
+openapi: 3.0.0
+info:
+  title: SMS Dashboard API
+  description: API for managing SMS modems, messages, and users.
+  version: 1.0.0
+servers:
+  - url: /api/v1
+    description: V1 API
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+        username:
+          type: string
+        role:
+          type: string
+          enum: [admin, user]
+        allowed_modems:
+          type: string
+          description: Comma separated ICCIDs or "*"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Modem:
+      type: object
+      properties:
+        iccid:
+          type: string
+        name:
+          type: string
+        imei:
+          type: string
+        operator:
+          type: string
+        signal_strength:
+          type: integer
+        port_name:
+          type: string
+        status:
+          type: string
+          enum: [online, offline]
+        registration:
+          type: string
+        last_seen:
+          type: string
+          format: date-time
+
+    SMS:
+      type: object
+      properties:
+        id:
+          type: integer
+        iccid:
+          type: string
+        phone:
+          type: string
+        content:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        type:
+          type: string
+          enum: [sent, received]
+        is_read:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    Webhook:
+      type: object
+      properties:
+        id:
+          type: integer
+        iccid:
+          type: string
+        url:
+          type: string
+        platform:
+          type: string
+          enum: [telegram, slack, generic]
+        channel_id:
+          type: string
+          description: "For Telegram"
+        template:
+          type: string
+        enabled:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+security:
+  - bearerAuth: []
+
+paths:
+  /login:
+    post:
+      summary: Login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+      responses:
+        "200":
+          description: Successful login
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                  user:
+                    $ref: "#/components/schemas/User"
+        "401":
+          description: Invalid credentials
+
+  /change_password:
+    post:
+      summary: Change Password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                old_password:
+                  type: string
+                new_password:
+                  type: string
+      responses:
+        "200":
+          description: Password updated
+
+  /modems:
+    get:
+      summary: List all modems
+      responses:
+        "200":
+          description: List of modems
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Modem"
+
+  /modems/{iccid}:
+    get:
+      summary: Get modem detailed info
+      parameters:
+        - name: iccid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Modem details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Modem"
+    put:
+      summary: Update modem details (e.g. Name)
+      parameters:
+        - name: iccid
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+      responses:
+        "200":
+          description: Updated modem
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Modem"
+
+  /modems/{iccid}/scan:
+    post:
+      summary: Scan for available networks
+      parameters:
+        - name: iccid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of available networks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  networks:
+                    type: array
+                    items:
+                      type: string
+
+  /modems/{iccid}/operator:
+    post:
+      summary: Set network operator
+      parameters:
+        - name: iccid
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                operator:
+                  type: string
+                  description: "MCCMNC code or 'AUTO'"
+      responses:
+        "200":
+          description: Operator set initiated
+
+  /modems/{iccid}/at:
+    post:
+      summary: Execute AT command directly
+      tags: [Modems]
+      parameters:
+        - name: iccid
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cmd:
+                  type: string
+                  example: "AT+CSQ"
+                timeout:
+                  type: integer
+                  example: 5000
+      responses:
+        200:
+          description: Command response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  response:
+                    type: string
+
+  /modems/{iccid}/input:
+    post:
+      summary: Send raw input (e.g. for SMS prompt)
+      tags: [Modems]
+      parameters:
+        - name: iccid
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cmd:
+                  type: string
+                  example: "Message Body\x1A"
+                timeout:
+                  type: integer
+                  example: 5000
+      responses:
+        200:
+          description: Input response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  response:
+                    type: string
+
+  /sms:
+    get:
+      summary: List SMS messages
+      parameters:
+        - name: iccid
+          in: query
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Paginated list of SMS
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SMS"
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+
+  /users:
+    get:
+      summary: List users (Admin only)
+      responses:
+        "200":
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/User"
+    post:
+      summary: Create new user (Admin only)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+                role:
+                  type: string
+                  enum: [admin, user]
+                allowed_modems:
+                  type: string
+      responses:
+        "200":
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  /users/{id}:
+    delete:
+      summary: Delete user (Admin only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: User deleted
+
+  /webhooks:
+    get:
+      summary: List webhooks (Admin only)
+      parameters:
+        - name: iccid
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of webhooks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Webhook"
+    post:
+      summary: Create webhook (Admin only)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                iccid:
+                  type: string
+                platform:
+                  type: string
+                url:
+                  type: string
+                template:
+                  type: string
+      responses:
+        "200":
+          description: Webhook created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Webhook"
+
+  /webhooks/{id}:
+    delete:
+      summary: Delete webhook (Admin only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Webhook deleted

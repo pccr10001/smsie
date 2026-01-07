@@ -1,0 +1,6 @@
+*.exe
+smsie
+mcc_mnc.json
+*.db
+.idea
+config.yaml

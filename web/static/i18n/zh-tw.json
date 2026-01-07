@@ -1,0 +1,21 @@
+{
+    "login_title": "登入",
+    "validating": "驗證中...",
+    "nav_sms": "簡訊列表",
+    "nav_modems": "數據機管理",
+    "nav_settings": "設定",
+    "nav_users": "使用者管理",
+    "sms_title": "收件夾",
+    "modems_title": "數據機管理",
+    "users_title": "使用者管理",
+    "all_modems": "所有裝置",
+    "loading": "載入中...",
+    "signal": "訊號",
+    "registration": "註冊狀態",
+    "operator": "營運商",
+    "scan_networks": "掃描網路",
+    "auto_select": "自動選擇",
+    "save": "儲存",
+    "settings": "設定",
+    "webhooks": "Webhooks"
+}

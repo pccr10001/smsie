@@ -1,0 +1,19 @@
+server:
+  port: ":8080"
+  mode: "debug" # debug, release
+
+database:
+  driver: "sqlite" # sqlite, mysql
+  dsn: "smsie.db"
+
+serial:
+  scan_interval: 5s
+  exclude_ports:
+    # - "COM1"
+  init_at_commands:
+    - "ATE0"
+    - "AT+COPS=3,2"
+    - "AT+CMGF=0" # PDU mode
+
+log:
+  level: "info" # debug, info, warn, error

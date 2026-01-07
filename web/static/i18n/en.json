@@ -1,0 +1,21 @@
+{
+    "login_title": "Login",
+    "validating": "Validating...",
+    "nav_sms": "Messages",
+    "nav_modems": "Modems",
+    "nav_settings": "Settings",
+    "nav_users": "Users",
+    "sms_title": "Inbox",
+    "modems_title": "Modem Management",
+    "users_title": "User Management",
+    "all_modems": "All Modems",
+    "loading": "Loading...",
+    "signal": "Signal",
+    "registration": "registration",
+    "operator": "Operator",
+    "scan_networks": "Scan Networks",
+    "auto_select": "Auto Select",
+    "save": "Save",
+    "settings": "Settings",
+    "webhooks": "Webhooks"
+}

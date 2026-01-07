@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SMS Dashboard</title>
+    <!-- Bootstrap 5 -->
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css"
+    />
+    <style>
+      body {
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        background-color: #f4f6f9;
+      }
+      .sidebar {
+        height: 100vh;
+        background-color: #fff;
+        box-shadow: 2px 0 5px rgba(0, 0, 0, 0.05);
+      }
+      .nav-link.active {
+        background-color: #e9ecef;
+        color: #0d6efd;
+        font-weight: bold;
+        border-radius: 5px;
+      }
+      .nav-link {
+        color: #555;
+        margin-bottom: 5px;
+      }
+      .nav-link:hover {
+        background-color: #f8f9fa;
+      }
+      .card {
+        border: none;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        border-radius: 8px;
+      }
+      .sms-item {
+        border-bottom: 1px solid #eee;
+        padding: 10px 0;
+        transition: background 0.2s;
+      }
+      .sms-item:hover {
+        background-color: #fafafa;
+      }
+      .connection-status-dot {
+        height: 10px;
+        width: 10px;
+        background-color: #bbb;
+        border-radius: 50%;
+        display: inline-block;
+        margin-right: 5px;
+      }
+      .online {
+        background-color: #198754;
+      }
+      .offline {
+        background-color: #dc3545;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="login-app"
+      class="container d-none vh-100 d-flex justify-content-center align-items-center"
+    >
+      <div class="card p-4" style="width: 400px">
+        <h4 class="text-center mb-4" data-i18n="login_title">Login</h4>
+        <div class="mb-3">
+          <label class="form-label" data-i18n="username">Username</label>
+          <input type="text" class="form-control" id="username" />
+        </div>
+        <div class="mb-3">
+          <label class="form-label" data-i18n="password">Password</label>
+          <input type="password" class="form-control" id="password" />
+        </div>
+        <button
+          class="btn btn-primary w-100"
+          id="btn-login"
+          data-i18n="login_btn"
+        >
+          Login
+        </button>
+      </div>
+    </div>
+
+    <div id="dashboard-app" class="container-fluid d-none">
+      <div class="row">
+        <!-- Sidebar -->
+        <div class="col-md-2 sidebar p-3 d-flex flex-column">
+          <h5 class="mb-4 text-primary fw-bold">
+            <i class="bi bi-chat-square-text"></i> SMS Dashboard
+          </h5>
+          <nav class="nav flex-column flex-grow-1">
+            <a class="nav-link active" href="#" id="nav-sms"
+              ><i class="bi bi-envelope"></i>
+              <span data-i18n="nav_sms">Messages</span></a
+            >
+            <a class="nav-link" href="#" id="nav-modems"
+              ><i class="bi bi-hdd-network"></i>
+              <span data-i18n="nav_modems">Modems</span></a
+            >
+            <a class="nav-link" href="#" id="nav-users"
+              ><i class="bi bi-people"></i>
+              <span data-i18n="nav_users">Users</span></a
+            >
+          </nav>
+          <div class="mt-auto">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+              <div class="d-flex flex-column">
+                <small class="text-muted" id="current-user">User</small>
+                <a
+                  href="#"
+                  class="text-decoration-none small"
+                  onclick="$('#passwordModal').modal('show')"
+                  >Change Password</a
+                >
+              </div>
+              <select
+                class="form-select form-select-sm"
+                id="lang-select"
+                style="width: 80px"
+              >
+                <option value="en">EN</option>
+                <option value="zh-tw">中文</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Content -->
+        <div class="col-md-10 p-4">
+          <!-- SMS View -->
+          <div id="view-sms" class="view-section">
+            <div class="d-flex justify-content-between mb-3">
+              <h4 data-i18n="sms_title">Inbox</h4>
+              <div class="d-flex gap-2">
+                <select class="form-select w-auto" id="sms-filter-modem">
+                  <option value="" data-i18n="all_modems">All Modems</option>
+                </select>
+                <button
+                  class="btn btn-outline-primary btn-sm"
+                  id="btn-refresh-sms"
+                >
+                  <i class="bi bi-arrow-clockwise"></i>
+                </button>
+              </div>
+            </div>
+            <div class="card p-3">
+              <div id="sms-list">
+                <!-- JS Rendered -->
+              </div>
+            </div>
+          </div>
+
+          <!-- Modems View -->
+          <div id="view-modems" class="view-section d-none">
+            <h4 class="mb-3" data-i18n="modems_title">Modem Management</h4>
+            <div class="row" id="modem-list">
+              <!-- JS Rendered -->
+            </div>
+          </div>
+
+          <!-- User Management View -->
+          <div id="view-users" class="view-section d-none">
+            <div class="d-flex justify-content-between mb-3">
+              <h4 class="mb-3" data-i18n="users_title">User Management</h4>
+              <button class="btn btn-primary btn-sm" onclick="showAddUser()">
+                <i class="bi bi-person-plus"></i> Add User
+              </button>
+            </div>
+            <div class="card p-3">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Username</th>
+                    <th>Role</th>
+                    <th>Allowed Modems</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="user-list-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Webhook List Modal -->
+    <div class="modal fade" id="webhookListModal" tabindex="-1">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">
+              Webhooks for <span id="wh-list-iccid"></span>
+            </h5>
+            <button
+              type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-3 text-end">
+              <button class="btn btn-sm btn-success" onclick="showAddWebhook()">
+                <i class="bi bi-plus"></i> Add Webhook
+              </button>
+            </div>
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Platform</th>
+                  <th>URL</th>
+                  <th>Channel ID</th>
+                  <th>Template</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="wh-list-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edit/Add Webhook Modal -->
+    <div class="modal fade" id="webhookModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Edit Webhook</h5>
+            <button
+              type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" id="wh-iccid" />
+            <div class="mb-3">
+              <label class="form-label">Platform</label>
+              <select class="form-select" id="wh-platform">
+                <option value="generic">Generic (JSON)</option>
+                <option value="telegram">Telegram</option>
+                <option value="slack">Slack</option>
+              </select>
+            </div>
+            <div class="mb-3 d-none" id="wh-channel-group">
+              <label class="form-label">Channel ID / Chat ID</label>
+              <input
+                type="text"
+                class="form-control"
+                id="wh-channel-id"
+                placeholder="@mychannel or 12345678"
+              />
+            </div>
+            <div class="mb-3">
+              <label class="form-label">URL</label>
+              <input
+                type="text"
+                class="form-control"
+                id="wh-url"
+                placeholder="https://..."
+              />
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Template (Go Template)</label>
+              <textarea
+                class="form-control"
+                id="wh-template"
+                rows="3"
+                placeholder="{{.Content}}"
+              ></textarea>
+              <div class="form-text">
+                Available vars: .Content, .Phone, .ICCID
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              data-bs-dismiss="modal"
+            >
+              Close
+            </button>
+            <button type="button" class="btn btn-primary" id="btn-save-webhook">
+              Save
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add User Modal -->
+    <div class="modal fade" id="userModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Add User</h5>
+            <button
+              type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-3">
+              <label class="form-label">Username</label>
+              <input type="text" class="form-control" id="u-username" />
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Password</label>
+              <input type="password" class="form-control" id="u-password" />
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Role</label>
+              <select class="form-select" id="u-role">
+                <option value="user">User</option>
+                <option value="admin">Admin</option>
+              </select>
+            </div>
+            <!-- Allowed Modems (Comma separated for now, simpler) -->
+            <div class="mb-3" id="u-allowed-group">
+              <label class="form-label">Allowed ICCIDs</label>
+              <input
+                type="text"
+                class="form-control"
+                id="u-allowed"
+                placeholder="ICCID1,ICCID2 or *"
+              />
+              <div class="form-text">
+                Use * for all, or comma separated list.
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              data-bs-dismiss="modal"
+            >
+              Close
+            </button>
+            <button type="button" class="btn btn-primary" id="btn-save-user">
+              Create
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modem Settings Modal -->
+    <div class="modal fade" id="modemModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">
+              Modem Settings: <span id="m-iccid-title"></span>
+            </h5>
+            <button
+              type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" id="m-iccid" />
+            <div class="mb-3">
+              <label class="form-label">Name (Alias)</label>
+              <input type="text" class="form-control" id="m-name" />
+            </div>
+            <hr />
+            <h6>Network Configuration</h6>
+            <div class="mb-2">
+              <label class="form-label">Operator</label>
+              <div class="input-group">
+                <input
+                  type="text"
+                  class="form-control"
+                  id="m-operator"
+                  placeholder="Code or Name"
+                />
+                <button
+                  class="btn btn-outline-secondary"
+                  type="button"
+                  id="btn-set-operator"
+                >
+                  Set
+                </button>
+                <button
+                  class="btn btn-outline-secondary"
+                  type="button"
+                  id="btn-auto-operator"
+                >
+                  Auto
+                </button>
+              </div>
+              <div class="form-text">
+                Use "AUTO" or operator code (e.g. 46692).
+              </div>
+            </div>
+            <div class="mb-3">
+              <button
+                class="btn btn-outline-primary w-100"
+                id="btn-scan-networks"
+              >
+                <span
+                  class="spinner-border spinner-border-sm d-none"
+                  id="scan-spinner"
+                ></span>
+                Search Networks
+              </button>
+              <div id="scan-results" class="mt-2 small text-muted"></div>
+            </div>
+            <hr />
+            <h6>AT Command Terminal</h6>
+            <div class="mb-2">
+              <textarea
+                class="form-control bg-dark text-light mb-2"
+                id="at-log"
+                rows="5"
+                readonly
+                style="font-family: monospace; font-size: 0.85rem"
+              ></textarea>
+              <div class="input-group">
+                <input
+                  type="text"
+                  class="form-control"
+                  id="at-input"
+                  placeholder="AT+CSQ or Input..."
+                />
+                <button
+                  class="btn btn-outline-secondary"
+                  type="button"
+                  id="btn-send-at"
+                >
+                  Send AT
+                </button>
+                <button
+                  class="btn btn-outline-secondary"
+                  type="button"
+                  id="btn-send-raw"
+                >
+                  Input
+                </button>
+              </div>
+              <div class="form-text">
+                "Send AT" for commands. "Input" for raw input (e.g. ^Z).
+              </div>
+              <button
+                class="btn btn-sm btn-link text-muted"
+                onclick="$('#at-log').val('')"
+              >
+                Clear Log
+              </button>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              data-bs-dismiss="modal"
+            >
+              Close
+            </button>
+            <button type="button" class="btn btn-primary" id="btn-save-modem">
+              Save
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Password Change Modal -->
+    <div class="modal fade" id="passwordModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">Change Password</h5>
+            <button
+              type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-3">
+              <label class="form-label">Old Password</label>
+              <input type="password" class="form-control" id="pw-old" />
+            </div>
+            <div class="mb-3">
+              <label class="form-label">New Password</label>
+              <input type="password" class="form-control" id="pw-new" />
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              data-bs-dismiss="modal"
+            >
+              Close
+            </button>
+            <button
+              type="button"
+              class="btn btn-primary"
+              id="btn-save-password"
+            >
+              Update
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/js/app.js"></script>
+  </body>
+</html>

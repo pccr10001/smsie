@@ -50,8 +50,19 @@
     go mod tidy
     ```
 
+### Linux 
+
 3.  **Build the application:**
     ```bash
+    sudo apt install portaudio19-dev libusb-dev ffmpeg
+    go build
+    ```
+
+### Windows
+3. **Build the application:**
+    ```bash
+   # Use mingw64 to build.
+   pacman -S  mingw-w64-x86_64-ffmpeg  mingw-w64-x86_64-portaudio  mingw-w64-x86_64-libusb
     go build
     ```
 

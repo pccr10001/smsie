@@ -2,12 +2,15 @@ package main
 
 import (
 	"crypto/rand"
+	"log"
 	"math/big"
 	"net/http"
+	"os"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/pccr10001/smsie/internal/api"
+	"github.com/pccr10001/smsie/internal/calling"
 	"github.com/pccr10001/smsie/internal/config"
 	"github.com/pccr10001/smsie/internal/mccmnc"
 	"github.com/pccr10001/smsie/internal/model"
@@ -55,6 +58,26 @@ func main() {
 	wm.Start()
 	defer wm.Stop()
 
+	stdLogger := log.New(os.Stdout, "[calling] ", log.LstdFlags|log.Lmicroseconds)
+	callMgr, err := calling.NewManager(calling.Config{
+		STUNServers: config.AppConfig.Calling.STUNServers,
+		UDPPortMin:  config.AppConfig.Calling.UDPPortMin,
+		UDPPortMax:  config.AppConfig.Calling.UDPPortMax,
+		Audio: calling.AudioConfig{
+			DeviceKeyword:    config.AppConfig.Calling.Audio.DeviceKeyword,
+			OutputDeviceName: config.AppConfig.Calling.Audio.OutputDeviceName,
+			SampleRate:       config.AppConfig.Calling.Audio.SampleRate,
+			Channels:         config.AppConfig.Calling.Audio.Channels,
+			BitsPerSample:    config.AppConfig.Calling.Audio.BitsPerSample,
+			CaptureChunkMs:   config.AppConfig.Calling.Audio.CaptureChunkMs,
+			PlaybackChunkMs:  config.AppConfig.Calling.Audio.PlaybackChunkMs,
+		},
+	}, stdLogger)
+	if err != nil {
+		logger.Log.Fatalf("Failed to init calling manager: %v", err)
+	}
+	defer callMgr.CloseAll()
+
 	// 6. Start Server
 	// Load Templates
 	r.LoadHTMLGlob("web/templates/*")
@@ -65,7 +88,7 @@ func main() {
 	})
 
 	// Setup Routes
-	mh := api.NewModemHandler(db, wm)
+	mh := api.NewModemHandler(db, wm, callMgr)
 	sh := api.NewSMSHandler(db)
 	wh := api.NewWebhookHandler(db)
 	uh := api.NewUserHandler(db)
@@ -87,6 +110,10 @@ func main() {
 			authGroup.POST("/modems/:iccid/operator", mh.SetOperator)
 			authGroup.POST("/modems/:iccid/at", mh.ExecuteAT)
 			authGroup.POST("/modems/:iccid/input", mh.ExecuteInput)
+			authGroup.GET("/modems/:iccid/call/state", mh.GetCallState)
+			authGroup.POST("/modems/:iccid/call/dial", mh.Dial)
+			authGroup.POST("/modems/:iccid/call/hangup", mh.Hangup)
+			authGroup.POST("/modems/:iccid/reboot", mh.Reboot)
 			authGroup.POST("/modems/:iccid/send", mh.SendSMS)
 			authGroup.GET("/sms", sh.ListSMS)
 
@@ -104,6 +131,8 @@ func main() {
 			}
 		}
 	}
+
+	apiGroup.GET("/modems/:iccid/ws", mh.WS)
 
 	port := config.AppConfig.Server.Port
 	logger.Log.Infof("Server listening on %s", port)

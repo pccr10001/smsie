@@ -7,8 +7,14 @@
 - **Modem Management**: Automatically scans and detects serial modems. Tracks signal strength, operator name, and registration status in real-time.
 - **SMS Operations**:
   - **Read**: View received SMS messages with pagination and search.`
+  - **Send**: Send SMS with PDU supported.
   - **Immediate Scan**: Instant SMS detection upon receiving `+CMTI` notifications.
 - **AT Command Terminal**: Execute raw AT commands directly on modems for debugging and advanced configuration.
+- **Voice Call (Dial/Hangup)**: Basic call controls per modem with call state tracking (`idle`, `dialing`, `in_call`).
+  - Dial UI appears only when modem `AT+QCFG="usbcfg"` probe indicates UAC enabled, so we only support Quectel modules currently.
+  - Browser microphone/WebRTC signaling must be ready before `ATD` is sent.
+  - PortAudio modem audio bridge initializes only when dial is requested.
+  - Automatically UAC and USB device mapping.
 - **Webhooks**: Forward received SMS messages to **Telegram** and **Slack** automatically.
 - **User Management**:
   - Role-based access control (Admin/User).
@@ -16,6 +22,7 @@
   - Modem access restrictions per user.
 - **Database Support**: Supports both **SQLite** (default) and **MySQL** for flexible deployment.
 - **Modern UI**: Responsive web interface built with Bootstrap and jQuery.
+- **Cross Platform**: Windows / Linux are supported.
 
 ## 🛠 Prerequisites
 
@@ -25,6 +32,8 @@
     - Quectel EC20
     - Quectel EC800M
     - OpenLuat Air780E
+  - Following modems with voice supported are tested:
+    - Quectel EC20
 
 ## 📦 Installation
 
@@ -68,9 +77,53 @@ serial:
     - "AT+CMEE=1" # Verbose errors
     - "AT+COPS=3,2" # Numberic operator name
 
+calling:
+  stun_servers:
+    - "stun:stun.l.google.com:19302"
+  udp_port_min: 40000
+  udp_port_max: 40100
+  audio:
+    # Optional fallback keyword for PortAudio device matching.
+    # Usually no manual config is needed for Quectel UAC flow.
+    device_keyword: "AC Interface"
+    output_device_name: ""
+    sample_rate: 8000
+    channels: 1
+    bits_per_sample: 16
+    capture_chunk_ms: 40
+    playback_chunk_ms: 100
+
 log:
   level: "info" # debug, info, warn, error
 ```
+
+## Voice Calling (Quectel UAC)
+
+- On modem probe, smsie sends `AT+QCFG="usbcfg"`.
+- smsie checks the trailing 7 flags of `+QCFG: "USBCFG",...` and requires the last flag to be `1` (UAC enabled).
+- Only when UAC is ready will the dial UI appear in frontend.
+- On dial:
+  - Browser microphone + WebRTC signaling must complete first.
+  - Then backend initializes PortAudio bridge.
+  - Finally `ATD<number>;` is sent.
+- If dial fails, backend closes WebRTC session and audio bridge automatically.
+- USB/UAC matching is automatic:
+  - Uses modem port (`COMx`/`ttyUSBx`) to resolve USB identity.
+  - Uses QCFG-derived VID/PID and USB enumeration (`gousb`) to locate target UAC device.
+
+## Linux Permissions (for calling/UAC)
+
+For voice calling on Linux, the process user needs access to serial, USB bus, and audio devices:
+
+- Add user groups (example):
+  - `sudo usermod -aG dialout,audio,plugdev <your-user>`
+- Ensure access to:
+  - `/dev/ttyUSB*` (AT command port)
+  - `/dev/bus/usb/*` (USB enumeration via `gousb`/libusb)
+  - ALSA/PulseAudio/PipeWire devices used by PortAudio
+- If needed, create udev rules for Quectel USB permissions (VID/PID from modem `AT+QCFG="usbcfg"`).
+
+After group/udev changes, re-login or reboot.
 
 ## 📂 Data Files
 
@@ -134,6 +187,10 @@ smsie provides a RESTful API for integration.
 - `GET /modems`: List connected modems.
 - `POST /modems/:iccid/at`: Execute AT command.
 - `POST /modems/:iccid/input`: Send raw input (e.g., for `^Z`).
+- `GET /modems/:iccid/call/state`: Get current call state.
+- `POST /modems/:iccid/call/dial`: Dial a number. Body: `{ "number": "09xxxxxxxx" }`.
+- `POST /modems/:iccid/call/hangup`: Hang up current call.
+- `GET /modems/:iccid/ws`: WebRTC signaling endpoint (WebSocket, token via query `?token=`).
 - `GET /sms`: List SMS messages.
 
 See the `openapi/` directory (if available) or code structure for detailed API definitions.

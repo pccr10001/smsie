@@ -420,6 +420,17 @@
               </button>
               <div id="scan-results" class="mt-2 small text-muted"></div>
             </div>
+            <div class="mb-3">
+              <button
+                class="btn btn-outline-danger w-100"
+                id="btn-reboot-modem"
+              >
+                Reboot Modem (AT+CFUN=1,1)
+              </button>
+              <div class="form-text text-danger">
+                This will reboot modem immediately and disconnect current session.
+              </div>
+            </div>
             <hr />
             <h6>AT Command Terminal</h6>
             <div class="mb-2">
@@ -461,6 +472,36 @@
               >
                 Clear Log
               </button>
+            </div>
+            <hr />
+            <div id="call-section" class="d-none">
+            <h6>Voice Call</h6>
+            <div class="mb-2">
+              <label class="form-label">Phone Number</label>
+              <div class="input-group">
+                <input
+                  type="text"
+                  class="form-control"
+                  id="call-phone"
+                  placeholder="09xxxxxxxx"
+                />
+                <button
+                  class="btn btn-outline-primary"
+                  type="button"
+                  id="btn-call-dial"
+                >
+                  Dial
+                </button>
+                <button
+                  class="btn btn-outline-danger"
+                  type="button"
+                  id="btn-call-hangup"
+                >
+                  Hangup
+                </button>
+              </div>
+              <div id="call-status" class="mt-2 small text-muted"></div>
+            </div>
             </div>
             <hr />
             <h6>Send SMS</h6>

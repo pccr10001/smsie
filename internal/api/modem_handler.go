@@ -6,18 +6,21 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/pccr10001/smsie/internal/auth"
+	"github.com/pccr10001/smsie/internal/calling"
 	"github.com/pccr10001/smsie/internal/model"
 	"github.com/pccr10001/smsie/internal/worker"
 	"gorm.io/gorm"
 )
 
 type ModemHandler struct {
-	db *gorm.DB
-	wm *worker.Manager
+	db      *gorm.DB
+	wm      *worker.Manager
+	callMgr *calling.Manager
 }
 
-func NewModemHandler(db *gorm.DB, wm *worker.Manager) *ModemHandler {
-	return &ModemHandler{db: db, wm: wm}
+func NewModemHandler(db *gorm.DB, wm *worker.Manager, callMgr *calling.Manager) *ModemHandler {
+	return &ModemHandler{db: db, wm: wm, callMgr: callMgr}
 }
 
 func (h *ModemHandler) ListModems(c *gin.Context) {
@@ -341,4 +344,294 @@ func (h *ModemHandler) SendSMS(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "message": "SMS sent successfully"})
+}
+
+func (h *ModemHandler) GetCallState(c *gin.Context) {
+	userObj, exists := c.Get("user")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	user := userObj.(*model.User)
+
+	iccid := c.Param("iccid")
+
+	if user.Role != "admin" {
+		allowed := splitAllowed(user.AllowedModems)
+		allow := false
+		for _, a := range allowed {
+			if a == iccid || a == "*" {
+				allow = true
+				break
+			}
+		}
+		if !allow {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied for this modem"})
+			return
+		}
+	}
+
+	w := h.wm.GetWorkerByICCID(iccid)
+	if w == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Modem not active (worker not found)"})
+		return
+	}
+
+	state := w.CallState()
+	usbDevices := []calling.USBDeviceInfo{}
+	if state.UACVID != "" && state.UACPID != "" {
+		if devs, err := calling.EnumerateByVIDPID(state.UACVID, state.UACPID); err == nil {
+			usbDevices = devs
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"state":       state.State,
+		"reason":      state.Reason,
+		"updated_at":  state.UpdatedAt,
+		"uac_ready":   w.IsUACReady(),
+		"uac_vid":     state.UACVID,
+		"uac_pid":     state.UACPID,
+		"usb_devices": usbDevices,
+	})
+}
+
+func (h *ModemHandler) Dial(c *gin.Context) {
+	userObj, exists := c.Get("user")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	user := userObj.(*model.User)
+
+	iccid := c.Param("iccid")
+
+	if user.Role != "admin" {
+		allowed := splitAllowed(user.AllowedModems)
+		allow := false
+		for _, a := range allowed {
+			if a == iccid || a == "*" {
+				allow = true
+				break
+			}
+		}
+		if !allow {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied for this modem"})
+			return
+		}
+	}
+
+	var req struct {
+		Number string `json:"number"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	w := h.wm.GetWorkerByICCID(iccid)
+	if w == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Modem not active (worker not found)"})
+		return
+	}
+	if !w.IsUACReady() {
+		c.JSON(http.StatusConflict, gin.H{"error": "UAC is not enabled on modem (QCFG USBCFG check failed)"})
+		return
+	}
+	if h.callMgr == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "calling manager not initialized"})
+		return
+	}
+
+	vid, pid := w.UACIdentity()
+	target := calling.ModemTarget{
+		PortName: w.PortName,
+		VID:      vid,
+		PID:      pid,
+	}
+	if _, err := h.callMgr.EnsureSession(iccid, target); err != nil {
+		c.JSON(http.StatusPreconditionFailed, gin.H{"error": "WebRTC session init failed: " + err.Error()})
+		return
+	}
+	if err := h.callMgr.RequireConnected(iccid); err != nil {
+		c.JSON(http.StatusPreconditionFailed, gin.H{"error": "WebRTC not ready. Please complete signaling first."})
+		return
+	}
+	if err := h.callMgr.EnsureAudio(iccid); err != nil {
+		if h.callMgr != nil {
+			_ = h.callMgr.CloseSession(iccid)
+		}
+		c.JSON(http.StatusPreconditionFailed, gin.H{"error": "Audio init failed: " + err.Error()})
+		return
+	}
+
+	err := w.Dial(req.Number)
+	if err != nil {
+		if h.callMgr != nil {
+			_ = h.callMgr.CloseSession(iccid)
+		}
+		if worker.IsInvalidDialNumberError(err) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid dial number"})
+			return
+		}
+		if worker.IsCallInProgressError(err) {
+			c.JSON(http.StatusConflict, gin.H{"error": "call already in progress"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Dial failed: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "call_state": w.CallState()})
+}
+
+func (h *ModemHandler) Hangup(c *gin.Context) {
+	userObj, exists := c.Get("user")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	user := userObj.(*model.User)
+
+	iccid := c.Param("iccid")
+
+	if user.Role != "admin" {
+		allowed := splitAllowed(user.AllowedModems)
+		allow := false
+		for _, a := range allowed {
+			if a == iccid || a == "*" {
+				allow = true
+				break
+			}
+		}
+		if !allow {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied for this modem"})
+			return
+		}
+	}
+
+	w := h.wm.GetWorkerByICCID(iccid)
+	if w == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Modem not active (worker not found)"})
+		return
+	}
+
+	err := w.Hangup()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Hangup failed: " + err.Error()})
+		return
+	}
+	if h.callMgr != nil {
+		_ = h.callMgr.CloseSession(iccid)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "call_state": w.CallState()})
+}
+
+func (h *ModemHandler) Reboot(c *gin.Context) {
+	userObj, exists := c.Get("user")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	user := userObj.(*model.User)
+
+	iccid := c.Param("iccid")
+
+	if user.Role != "admin" {
+		allowed := splitAllowed(user.AllowedModems)
+		allow := false
+		for _, a := range allowed {
+			if a == iccid || a == "*" {
+				allow = true
+				break
+			}
+		}
+		if !allow {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied for this modem"})
+			return
+		}
+	}
+
+	w := h.wm.GetWorkerByICCID(iccid)
+	if w == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Modem not active (worker not found)"})
+		return
+	}
+
+	if h.callMgr != nil {
+		_ = h.callMgr.CloseSession(iccid)
+	}
+
+	if err := w.Reboot(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Reboot failed: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "message": "Reboot command sent (AT+CFUN=1,1)"})
+}
+
+func (h *ModemHandler) WS(c *gin.Context) {
+	if _, exists := c.Get("user"); !exists {
+		token := c.Query("token")
+		if token == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+			return
+		}
+		claims, err := auth.ValidateToken(token)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+			return
+		}
+
+		var user model.User
+		if err := h.db.First(&user, claims.UserID).Error; err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found"})
+			return
+		}
+		c.Set("user", &user)
+	}
+
+	userObj, exists := c.Get("user")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	user := userObj.(*model.User)
+
+	iccid := c.Param("iccid")
+
+	if user.Role != "admin" {
+		allowed := splitAllowed(user.AllowedModems)
+		allow := false
+		for _, a := range allowed {
+			if a == iccid || a == "*" {
+				allow = true
+				break
+			}
+		}
+		if !allow {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied for this modem"})
+			return
+		}
+	}
+
+	if h.callMgr == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "calling manager not initialized"})
+		return
+	}
+
+	w := h.wm.GetWorkerByICCID(iccid)
+	if w == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Modem not active (worker not found)"})
+		return
+	}
+
+	vid, pid := w.UACIdentity()
+	target := calling.ModemTarget{
+		PortName: w.PortName,
+		VID:      vid,
+		PID:      pid,
+	}
+
+	handleModemWS(c, h.callMgr, iccid, target)
 }

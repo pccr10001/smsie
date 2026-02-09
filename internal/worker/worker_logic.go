@@ -52,6 +52,10 @@ func (w *ModemWorker) poll() {
 		// Skip polling if busy with manual command
 		return
 	}
+	if w.GetCallState().State != callStateIdle {
+		// Skip polling during dialing/in-call to avoid AT flow interference
+		return
+	}
 	w.checkSignal()
 	w.checkSMS()
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,14 @@ type ModemWorker struct {
 	busyMu sync.Mutex
 	busy   bool
 
+	callOpMu sync.Mutex
+	callMu   sync.RWMutex
+	call     callSnapshot
+	uacMu    sync.RWMutex
+	uacReady bool
+	uacVID   string
+	uacPID   string
+
 	// Data
 	repo           *repository.ModemRepository
 	smsRepo        *repository.SMSRepository
@@ -60,6 +69,25 @@ type commandRequest struct {
 	silent   bool
 }
 
+type callSnapshot struct {
+	State     string
+	Reason    string
+	UpdatedAt time.Time
+}
+
+const (
+	callStateIdle    = "idle"
+	callStateDialing = "dialing"
+	callStateInCall  = "in_call"
+)
+
+var (
+	errInvalidDialNumber = errors.New("invalid dial number")
+	errCallInProgress    = errors.New("call already in progress")
+)
+
+var dialNumberPattern = regexp.MustCompile(`^[0-9*#+]+$`)
+
 func NewModemWorker(portName string, db *gorm.DB, manager *Manager) *ModemWorker {
 	return &ModemWorker{
 		PortName:       portName,
@@ -71,6 +99,14 @@ func NewModemWorker(portName string, db *gorm.DB, manager *Manager) *ModemWorker
 		manager:        manager,
 		rxChan:         make(chan rxMsg, 100), // Buffer to prevent blocking reader
 		triggerChan:    make(chan struct{}, 1),
+		call: callSnapshot{
+			State:     callStateIdle,
+			Reason:    "init",
+			UpdatedAt: time.Now(),
+		},
+		uacReady: false,
+		uacVID:   "",
+		uacPID:   "",
 	}
 }
 
@@ -290,6 +326,15 @@ func (w *ModemWorker) initModem() {
 			w.ExecuteAT(cmd, 5*time.Second)
 		}
 
+		// Probe UAC status by QCFG USBCFG
+		if ok, probeErr := w.probeUACEnabled(); probeErr != nil {
+			logger.Log.Warnf("[%s] UAC probe failed: %v", w.PortName, probeErr)
+			w.setUACReady(false)
+		} else {
+			w.setUACReady(ok)
+			logger.Log.Infof("[%s] UAC ready: %v", w.PortName, ok)
+		}
+
 		// 2. Identify Modem
 		resp, err := w.ExecuteAT("ATI", 2*time.Second)
 		if err != nil {
@@ -502,6 +547,9 @@ func (w *ModemWorker) isURC(line string) bool {
 	if strings.HasPrefix(line, "+CMTI:") || strings.HasPrefix(line, "+CREG:") {
 		return true
 	}
+	if w.shouldHandleCallURC(line) {
+		return true
+	}
 	return false
 }
 
@@ -515,13 +563,244 @@ func (w *ModemWorker) handleURC(line string) {
 		default:
 			// Already triggered
 		}
+		return
 	}
+
+	if w.shouldHandleCallURC(line) {
+		w.handleCallURC(line)
+	}
+}
+
+func (w *ModemWorker) shouldHandleCallURC(line string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(line))
+	if upper == "" {
+		return false
+	}
+
+	if upper == "NO CARRIER" || upper == "BUSY" || upper == "NO ANSWER" || upper == "NO DIALTONE" || upper == "RING" {
+		return true
+	}
+
+	if strings.HasPrefix(upper, "+CLCC:") || strings.HasPrefix(upper, "+QIND:") {
+		return true
+	}
+
+	return false
+}
+
+func (w *ModemWorker) handleCallURC(line string) {
+	upper := strings.ToUpper(strings.TrimSpace(line))
+
+	switch {
+	case upper == "RING":
+		if w.GetCallState().State == callStateIdle {
+			w.setCallState(callStateDialing, "ring")
+		}
+	case upper == "NO CARRIER":
+		w.setCallState(callStateIdle, "no_carrier")
+	case upper == "BUSY":
+		w.setCallState(callStateIdle, "busy")
+	case upper == "NO ANSWER":
+		w.setCallState(callStateIdle, "no_answer")
+	case upper == "NO DIALTONE":
+		w.setCallState(callStateIdle, "no_dialtone")
+	case strings.HasPrefix(upper, "+CLCC:"):
+		state, reason := parseCLCCState(line)
+		if state != "" {
+			w.setCallState(state, reason)
+		}
+	}
+}
+
+func parseCLCCState(line string) (string, string) {
+	idx := strings.Index(line, ":")
+	if idx < 0 || idx+1 >= len(line) {
+		return "", ""
+	}
+	body := strings.TrimSpace(line[idx+1:])
+	parts := strings.Split(body, ",")
+	if len(parts) < 3 {
+		return "", ""
+	}
+
+	stat := strings.TrimSpace(parts[2])
+	// 3GPP TS 27.007: 0 active, 1 held, 2 dialing, 3 alerting, 4 incoming, 5 waiting
+	switch stat {
+	case "0", "1":
+		return callStateInCall, "clcc_active"
+	case "2", "3", "4", "5":
+		return callStateDialing, "clcc_progress"
+	default:
+		return "", ""
+	}
+}
+
+func (w *ModemWorker) GetCallState() callSnapshot {
+	w.callMu.RLock()
+	defer w.callMu.RUnlock()
+	return w.call
+}
+
+func (w *ModemWorker) setCallState(state, reason string) {
+	if state == "" {
+		return
+	}
+
+	w.callMu.Lock()
+	prev := w.call
+	if prev.State == state {
+		w.callMu.Unlock()
+		return
+	}
+	w.call.State = state
+	w.call.Reason = reason
+	w.call.UpdatedAt = time.Now()
+	next := w.call
+	w.callMu.Unlock()
+
+	logger.Log.Infof("[%s] Call state changed: %s -> %s (%s)", w.PortName, prev.State, next.State, reason)
+}
+
+func (w *ModemWorker) Dial(number string) error {
+	number = strings.TrimSpace(number)
+	if number == "" || !dialNumberPattern.MatchString(number) {
+		return errInvalidDialNumber
+	}
+
+	w.callOpMu.Lock()
+	defer w.callOpMu.Unlock()
+
+	current := w.GetCallState().State
+	if current != callStateIdle {
+		return errCallInProgress
+	}
+
+	w.SetBusy(true)
+	defer w.SetBusy(false)
+
+	if _, err := w.ExecuteAT(`AT+QPCMV=1,2`, 5*time.Second); err != nil {
+		return fmt.Errorf("enable UAC voice failed: %w", err)
+	}
+
+	w.setCallState(callStateDialing, "dial")
+	if _, err := w.ExecuteAT("ATD"+number+";", 15*time.Second); err != nil {
+		_, _ = w.ExecuteATSilent(`AT+QPCMV=0`, 3*time.Second)
+		w.setCallState(callStateIdle, "dial_error")
+		return err
+	}
+
+	w.setCallState(callStateInCall, "dial_ok")
+	return nil
+}
+
+func (w *ModemWorker) Hangup() error {
+	w.callOpMu.Lock()
+	defer w.callOpMu.Unlock()
+
+	w.SetBusy(true)
+	defer w.SetBusy(false)
+
+	if _, err := w.ExecuteAT("ATH", 10*time.Second); err != nil {
+		return err
+	}
+	_, _ = w.ExecuteATSilent(`AT+QPCMV=0`, 3*time.Second)
+
+	w.setCallState(callStateIdle, "hangup")
+	return nil
 }
 
 func (w *ModemWorker) SetBusy(b bool) {
 	w.busyMu.Lock()
 	w.busy = b
 	w.busyMu.Unlock()
+}
+
+func (w *ModemWorker) setUACReady(v bool) {
+	w.uacMu.Lock()
+	w.uacReady = v
+	w.uacMu.Unlock()
+}
+
+func (w *ModemWorker) setUACIdentity(vid, pid string) {
+	w.uacMu.Lock()
+	w.uacVID = strings.ToUpper(strings.TrimSpace(strings.TrimPrefix(vid, "0x")))
+	w.uacPID = strings.ToUpper(strings.TrimSpace(strings.TrimPrefix(pid, "0x")))
+	w.uacMu.Unlock()
+}
+
+func (w *ModemWorker) UACIdentity() (string, string) {
+	w.uacMu.RLock()
+	defer w.uacMu.RUnlock()
+	return w.uacVID, w.uacPID
+}
+
+func (w *ModemWorker) IsUACReady() bool {
+	w.uacMu.RLock()
+	defer w.uacMu.RUnlock()
+	return w.uacReady
+}
+
+func (w *ModemWorker) probeUACEnabled() (bool, error) {
+	resp, err := w.ExecuteAT(`AT+QCFG="usbcfg"`, 5*time.Second)
+	if err != nil {
+		return false, err
+	}
+
+	line := parseID(resp, "+QCFG:")
+	if line == "" {
+		return false, errors.New("missing +QCFG response")
+	}
+
+	if !strings.Contains(strings.ToUpper(line), `"USBCFG"`) {
+		return false, errors.New("unexpected QCFG payload")
+	}
+
+	idx := strings.Index(line, `,`)
+	if idx < 0 || idx+1 >= len(line) {
+		return false, errors.New("invalid QCFG format")
+	}
+
+	parts := strings.Split(line[idx+1:], ",")
+	if len(parts) < 9 {
+		return false, errors.New("insufficient QCFG columns")
+	}
+
+	vid := strings.TrimSpace(parts[0])
+	pid := strings.TrimSpace(parts[1])
+	w.setUACIdentity(vid, pid)
+
+	partsLen := len(parts)
+	if partsLen < 7 {
+		return false, errors.New("insufficient trailing groups")
+	}
+	trailing := parts[partsLen-7:]
+	last := strings.TrimSpace(trailing[6])
+	v, parseErr := parseHexOrInt(last)
+	if parseErr != nil {
+		return false, parseErr
+	}
+
+	return v == 1, nil
+}
+
+func parseHexOrInt(s string) (int64, error) {
+	v := strings.TrimSpace(strings.ToLower(s))
+	v = strings.Trim(v, `"`)
+	if v == "" {
+		return 0, errors.New("empty value")
+	}
+	if strings.HasPrefix(v, "0x") {
+		n, err := strconv.ParseInt(strings.TrimPrefix(v, "0x"), 16, 64)
+		if err != nil {
+			return 0, err
+		}
+		return n, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 func (w *ModemWorker) IsBusy() bool {
@@ -724,6 +1003,28 @@ func (w *ModemWorker) SendSMS(phoneNumber, message string) error {
 
 	logger.Log.Infof("[%s] SMS sent successfully to %s", w.PortName, phoneNumber)
 	return nil
+}
+
+func (w *ModemWorker) Reboot() error {
+	w.SetBusy(true)
+	defer w.SetBusy(false)
+
+	w.setCallState(callStateIdle, "reboot")
+	w.setUACReady(false)
+
+	_, err := w.ExecuteATSilent("AT+CFUN=1,1", 3*time.Second)
+	if err == nil {
+		return nil
+	}
+
+	errText := strings.ToLower(err.Error())
+	if strings.Contains(errText, "timeout") ||
+		strings.Contains(errText, "closed") ||
+		strings.Contains(errText, "port") {
+		return nil
+	}
+
+	return err
 }
 
 // Helper to get TPDU alphabet type - used for debugging

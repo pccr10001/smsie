@@ -15,6 +15,170 @@ let auth = {
     role: localStorage.getItem('sms_role'), // 'admin' or 'user'
 };
 
+let callWS = null;
+let callPC = null;
+let callLocalStream = null;
+let callWSState = 'idle';
+let callStatePollTimer = null;
+
+function closeCallSignaling() {
+    if (callLocalStream) {
+        callLocalStream.getTracks().forEach(t => t.stop());
+        callLocalStream = null;
+    }
+    if (callPC) {
+        callPC.close();
+        callPC = null;
+    }
+    if (callWS) {
+        callWS.close();
+        callWS = null;
+    }
+    callWSState = 'idle';
+}
+
+function stopCallStatePolling() {
+    if (callStatePollTimer) {
+        clearInterval(callStatePollTimer);
+        callStatePollTimer = null;
+    }
+}
+
+function refreshCallStateUI(iccid) {
+    $.get('/api/v1/modems/' + iccid + '/call/state', function (state) {
+        if (state && state.state) {
+            $('#call-status').text(`Call state: ${state.state}${state.reason ? ` (${state.reason})` : ''}`);
+        }
+
+        const hasUACFlag = !!(state && Object.prototype.hasOwnProperty.call(state, 'uac_ready'));
+        const uacReady = !!(state && (state.uac_ready === true || state.uac_ready === 'true' || state.uac_ready === 1));
+
+        if (hasUACFlag && !uacReady) {
+            $('#call-section').addClass('d-none');
+        } else {
+            $('#call-section').removeClass('d-none');
+            $('#btn-call-dial').prop('disabled', false);
+            $('#btn-call-hangup').prop('disabled', false);
+        }
+    }).fail(function (xhr) {
+        const msg = xhr && xhr.responseJSON && xhr.responseJSON.error ? xhr.responseJSON.error : 'call state unavailable';
+        $('#call-section').removeClass('d-none');
+        $('#btn-call-dial').prop('disabled', true);
+        $('#btn-call-hangup').prop('disabled', true);
+        $('#call-status').text(`Call state error: ${msg}`);
+    });
+}
+
+async function ensureCallSignaling(iccid) {
+    if (callPC && callWS && callWS.readyState === WebSocket.OPEN && callPC.connectionState === 'connected') {
+        return;
+    }
+
+    closeCallSignaling();
+
+    const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+    const token = encodeURIComponent(auth.token || '');
+    const wsURL = `${protocol}://${location.host}/api/v1/modems/${encodeURIComponent(iccid)}/ws?token=${token}`;
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+            channelCount: 1,
+            sampleRate: 8000,
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+        },
+        video: false,
+    });
+    callLocalStream = stream;
+
+    callWS = new WebSocket(wsURL);
+    callWSState = 'connecting';
+
+    callPC = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+
+    stream.getAudioTracks().forEach(track => callPC.addTrack(track, stream));
+
+    const recvTransceiver = callPC.addTransceiver('audio', { direction: 'recvonly' });
+    if (recvTransceiver && recvTransceiver.setCodecPreferences && RTCRtpReceiver.getCapabilities) {
+        const caps = RTCRtpReceiver.getCapabilities('audio');
+        if (caps && caps.codecs) {
+            const selected = caps.codecs.filter((codec) => {
+                const mime = (codec.mimeType || '').toLowerCase();
+                return mime === 'audio/pcmu' || mime === 'audio/pcma';
+            });
+            if (selected.length > 0) {
+                recvTransceiver.setCodecPreferences(selected);
+            }
+        }
+    }
+
+    callPC.ontrack = (event) => {
+        const [remoteStream] = event.streams;
+        if (!remoteStream) return;
+        const audio = new Audio();
+        audio.srcObject = remoteStream;
+        audio.autoplay = true;
+        audio.play().catch(() => { });
+    };
+
+    callPC.onicecandidate = (event) => {
+        if (!event.candidate || !callWS || callWS.readyState !== WebSocket.OPEN) return;
+        callWS.send(JSON.stringify({ type: 'candidate', candidate: event.candidate }));
+    };
+
+    const waitConnected = new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('WebRTC connection timeout')), 15000);
+
+        callPC.onconnectionstatechange = () => {
+            if (callPC.connectionState === 'connected') {
+                clearTimeout(timeout);
+                callWSState = 'connected';
+                resolve();
+            } else if (callPC.connectionState === 'failed' || callPC.connectionState === 'closed') {
+                clearTimeout(timeout);
+                reject(new Error('WebRTC connection failed'));
+            }
+        };
+    });
+
+    await new Promise((resolve, reject) => {
+        callWS.onopen = async () => {
+            callWSState = 'ws-open';
+            try {
+                const offer = await callPC.createOffer({ offerToReceiveAudio: true });
+                await callPC.setLocalDescription(offer);
+                callWS.send(JSON.stringify({ type: 'offer', offer }));
+                resolve();
+            } catch (error) {
+                reject(error);
+            }
+        };
+        callWS.onerror = () => reject(new Error('WebSocket error'));
+        callWS.onclose = () => {
+            if (callWSState !== 'connected') {
+                reject(new Error('WebSocket closed before connected'));
+            }
+        };
+        callWS.onmessage = async (event) => {
+            try {
+                const msg = JSON.parse(event.data);
+                if (msg.type === 'answer' && msg.answer) {
+                    await callPC.setRemoteDescription(msg.answer);
+                } else if (msg.type === 'candidate' && msg.candidate) {
+                    await callPC.addIceCandidate(msg.candidate);
+                } else if (msg.type === 'error') {
+                    reject(new Error(msg.text || 'Signal error'));
+                }
+            } catch (error) {
+                reject(error);
+            }
+        };
+    });
+
+    await waitConnected;
+}
+
 $.ajaxSetup({
     beforeSend: function (xhr) {
         if (auth.token) {
@@ -542,6 +706,11 @@ window.showModemSettings = function (iccid) {
     $('#sms-phone').val("");
     $('#sms-content').val("");
     $('#sms-send-status').empty();
+    $('#call-phone').val("");
+    $('#call-status').text('Call state: idle');
+    $('#call-section').addClass('d-none');
+    stopCallStatePolling();
+    closeCallSignaling();
 
     // Fetch current details
     $.get('/api/v1/modems/' + iccid, function (m) {
@@ -551,8 +720,146 @@ window.showModemSettings = function (iccid) {
         }
     });
 
+    refreshCallStateUI(iccid);
+    callStatePollTimer = setInterval(function () {
+        if ($('#modemModal').hasClass('show')) {
+            refreshCallStateUI(iccid);
+        }
+    }, 2000);
+
     $('#modemModal').modal('show');
 }
+
+$('#modemModal').on('hidden.bs.modal', function () {
+    stopCallStatePolling();
+    closeCallSignaling();
+});
+
+$(document).on('click', '#btn-call-dial', function () {
+    const iccid = $('#m-iccid').val();
+    const number = $('#call-phone').val().trim();
+    const statusDiv = $('#call-status');
+    const dialBtn = $(this);
+    const hangupBtn = $('#btn-call-hangup');
+
+    if (!number) {
+        statusDiv.html('<span class="text-danger">Please enter a phone number</span>');
+        return;
+    }
+
+    dialBtn.prop('disabled', true);
+    hangupBtn.prop('disabled', true);
+    statusDiv.html('<span class="text-muted">Initializing microphone/WebRTC...</span>');
+
+    (async () => {
+        try {
+            await ensureCallSignaling(iccid);
+        } catch (error) {
+            statusDiv.html(`<span class="text-danger">${error.message || 'WebRTC init failed'}</span>`);
+            dialBtn.prop('disabled', false);
+            hangupBtn.prop('disabled', false);
+            return;
+        }
+
+        statusDiv.html('<span class="text-muted">Dialing...</span>');
+
+        $.ajax({
+            url: `/api/v1/modems/${iccid}/call/dial`,
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({ number: number }),
+            success: function (resp) {
+                const state = resp && resp.call_state ? resp.call_state.state : 'dialing';
+                const reason = resp && resp.call_state ? resp.call_state.reason : '';
+                statusDiv.html(`<span class="text-success">Call state: ${state}${reason ? ` (${reason})` : ''}</span>`);
+            },
+            error: function (xhr) {
+                let msg = "Dial failed";
+                if (xhr.responseJSON && xhr.responseJSON.error) {
+                    msg = xhr.responseJSON.error;
+                } else if (xhr.responseText) {
+                    msg = xhr.responseText;
+                }
+                closeCallSignaling();
+                statusDiv.html(`<span class="text-danger">${msg}</span>`);
+            },
+            complete: function () {
+                dialBtn.prop('disabled', false);
+                hangupBtn.prop('disabled', false);
+            }
+        });
+    })();
+});
+
+$(document).on('click', '#btn-call-hangup', function () {
+    const iccid = $('#m-iccid').val();
+    const statusDiv = $('#call-status');
+    const dialBtn = $('#btn-call-dial');
+    const hangupBtn = $(this);
+
+    dialBtn.prop('disabled', true);
+    hangupBtn.prop('disabled', true);
+    statusDiv.html('<span class="text-muted">Hanging up...</span>');
+
+    $.ajax({
+        url: `/api/v1/modems/${iccid}/call/hangup`,
+        method: 'POST',
+        success: function (resp) {
+            const state = resp && resp.call_state ? resp.call_state.state : 'idle';
+            const reason = resp && resp.call_state ? resp.call_state.reason : '';
+            statusDiv.html(`<span class="text-success">Call state: ${state}${reason ? ` (${reason})` : ''}</span>`);
+            closeCallSignaling();
+        },
+        error: function (xhr) {
+            let msg = "Hangup failed";
+            if (xhr.responseJSON && xhr.responseJSON.error) {
+                msg = xhr.responseJSON.error;
+            } else if (xhr.responseText) {
+                msg = xhr.responseText;
+            }
+            statusDiv.html(`<span class="text-danger">${msg}</span>`);
+        },
+        complete: function () {
+            dialBtn.prop('disabled', false);
+            hangupBtn.prop('disabled', false);
+        }
+    });
+});
+
+$(document).on('click', '#btn-reboot-modem', function () {
+    const iccid = $('#m-iccid').val();
+    const btn = $(this);
+    const statusDiv = $('#call-status');
+
+    if (!confirm('Reboot modem now? (AT+CFUN=1,1)')) {
+        return;
+    }
+
+    btn.prop('disabled', true).text('Rebooting...');
+    statusDiv.html('<span class="text-warning">Sending reboot command...</span>');
+
+    $.ajax({
+        url: `/api/v1/modems/${iccid}/reboot`,
+        method: 'POST',
+        success: function () {
+            closeCallSignaling();
+            $('#call-section').addClass('d-none');
+            statusDiv.html('<span class="text-success">Reboot command sent. Wait for modem to reconnect.</span>');
+        },
+        error: function (xhr) {
+            let msg = 'Reboot failed';
+            if (xhr.responseJSON && xhr.responseJSON.error) {
+                msg = xhr.responseJSON.error;
+            } else if (xhr.responseText) {
+                msg = xhr.responseText;
+            }
+            statusDiv.html(`<span class="text-danger">${msg}</span>`);
+        },
+        complete: function () {
+            btn.prop('disabled', false).text('Reboot Modem (AT+CFUN=1,1)');
+        }
+    });
+});
 
 // Send SMS Handler
 $('#btn-send-sms').click(function () {

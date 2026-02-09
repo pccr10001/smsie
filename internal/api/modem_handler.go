@@ -278,3 +278,67 @@ func (h *ModemHandler) executeCommand(c *gin.Context, timeout time.Duration) {
 
 	c.JSON(http.StatusOK, gin.H{"response": resp})
 }
+
+func (h *ModemHandler) SendSMS(c *gin.Context) {
+	userObj, exists := c.Get("user")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	user := userObj.(*model.User)
+
+	iccid := c.Param("iccid")
+
+	// Auth check
+	if user.Role != "admin" {
+		allowed := splitAllowed(user.AllowedModems)
+		allow := false
+		for _, a := range allowed {
+			if a == iccid || a == "*" {
+				allow = true
+				break
+			}
+		}
+		if !allow {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied for this modem"})
+			return
+		}
+	}
+
+	var req struct {
+		Phone   string `json:"phone"`
+		Message string `json:"message"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.Phone == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Phone number is required"})
+		return
+	}
+	if req.Message == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Message is required"})
+		return
+	}
+
+	w := h.wm.GetWorkerByICCID(iccid)
+	if w == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Modem not active (worker not found)"})
+		return
+	}
+
+	if w.IsBusy() {
+		c.JSON(http.StatusConflict, gin.H{"error": "Modem is busy"})
+		return
+	}
+
+	err := w.SendSMS(req.Phone, req.Message)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Send SMS failed: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "message": "SMS sent successfully"})
+}

@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -462,6 +462,30 @@
                 Clear Log
               </button>
             </div>
+            <hr />
+            <h6>Send SMS</h6>
+            <div class="mb-2">
+              <label class="form-label">Phone Number</label>
+              <input
+                type="text"
+                class="form-control"
+                id="sms-phone"
+                placeholder="+886912345678"
+              />
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Message</label>
+              <textarea
+                class="form-control"
+                id="sms-content"
+                rows="3"
+                placeholder="Enter your message..."
+              ></textarea>
+            </div>
+            <button class="btn btn-success w-100" id="btn-send-sms">
+              <i class="bi bi-send"></i> Send SMS
+            </button>
+            <div id="sms-send-status" class="mt-2 small"></div>
           </div>
           <div class="modal-footer">
             <button

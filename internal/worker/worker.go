@@ -1,7 +1,7 @@
 package worker
 
 import (
-	"bufio"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
@@ -15,6 +15,8 @@ import (
 	"github.com/pccr10001/smsie/internal/model"
 	"github.com/pccr10001/smsie/internal/repository"
 	"github.com/pccr10001/smsie/pkg/logger"
+	"github.com/warthog618/sms"
+	"github.com/warthog618/sms/encoding/tpdu"
 	"go.bug.st/serial"
 	"gorm.io/gorm"
 )
@@ -113,7 +115,11 @@ func (w *ModemWorker) runLoop() {
 			if !req.silent {
 				logger.Log.Debugf("[%s] TX: %s", w.PortName, req.cmd)
 			}
-			if _, err := w.port.Write([]byte(req.cmd + "\r\n")); err != nil {
+			payload := req.cmd + "\r"
+			if strings.HasSuffix(req.cmd, "\x1A") || strings.HasSuffix(req.cmd, "\x1B") {
+				payload = req.cmd
+			}
+			if _, err := w.port.Write([]byte(payload)); err != nil {
 				req.errChan <- err
 				w.currentCmd = nil
 				continue
@@ -151,9 +157,12 @@ func (w *ModemWorker) runLoop() {
 					} else if strings.Contains(line, "ERROR") {
 						req.errChan <- fmt.Errorf("modem error: %s", strings.Join(fullResponse, "\n"))
 						break RespLoop
-					} else if line == "> " {
-						req.respChan <- "> "
-						break RespLoop
+					} else if strings.HasPrefix(line, ">") {
+						if strings.HasPrefix(req.cmd, "AT+CMGS=") {
+							req.respChan <- line
+							break RespLoop
+						}
+						continue
 					} else if w.isURC(line) {
 						w.handleURC(line)
 					}
@@ -180,12 +189,34 @@ func (w *ModemWorker) runLoop() {
 
 // dedicated read loop
 func (w *ModemWorker) readLoop() {
-	reader := bufio.NewReader(w.port)
+	buf := make([]byte, 256)
+	lineBuf := make([]byte, 0, 256)
+
+	emitLine := func(line string) bool {
+		select {
+		case w.rxChan <- rxMsg{Data: line}:
+			return true
+		case <-w.stop:
+			return false
+		}
+	}
+
+	flushLine := func() bool {
+		if len(lineBuf) == 0 {
+			return true
+		}
+
+		line := strings.TrimSpace(string(lineBuf))
+		lineBuf = lineBuf[:0]
+		if line == "" {
+			return true
+		}
+
+		return emitLine(line)
+	}
+
 	for {
-		// This will block until data or error
-		// SetReadTimeout is still active on the port, so it will wake up periodically
-		// but we can just treat timeout as emptiness
-		line, err := reader.ReadString('\n')
+		n, err := w.port.Read(buf)
 		if err != nil {
 			// Check if we are stopped
 			select {
@@ -194,9 +225,9 @@ func (w *ModemWorker) readLoop() {
 			default:
 			}
 
-			// Handle Timeout
-			errMsg := err.Error()
-			if strings.Contains(errMsg, "timeout") {
+			// Handle recoverable read states
+			errMsg := strings.ToLower(err.Error())
+			if strings.Contains(errMsg, "timeout") || strings.Contains(errMsg, "no data or error") {
 				continue
 			}
 
@@ -205,15 +236,29 @@ func (w *ModemWorker) readLoop() {
 			return
 		}
 
-		// Got Data
-		line = strings.TrimSpace(line)
-		if line != "" {
-			// Note: If buffer fills up this might block reader, but Buffer is 100
-			// and runLoop should consume fast.
-			select {
-			case w.rxChan <- rxMsg{Data: line}:
-			case <-w.stop:
-				return
+		if n == 0 {
+			continue
+		}
+
+		for _, b := range buf[:n] {
+			switch b {
+			case '\r':
+				continue
+			case '\n':
+				if !flushLine() {
+					return
+				}
+			case '>':
+				if strings.TrimSpace(string(lineBuf)) == "" {
+					if !emitLine(">") {
+						return
+					}
+					lineBuf = lineBuf[:0]
+					continue
+				}
+				lineBuf = append(lineBuf, b)
+			default:
+				lineBuf = append(lineBuf, b)
 			}
 		}
 	}
@@ -591,4 +636,110 @@ func (w *ModemWorker) SetOperator(oper string) error {
 
 	_, err := w.ExecuteAT(cmd, 60*time.Second)
 	return err
+}
+
+// SendSMS sends an SMS message using PDU format
+func (w *ModemWorker) SendSMS(phoneNumber, message string) error {
+	w.SetBusy(true)
+	defer w.SetBusy(false)
+
+	if w.modem == nil {
+		return errors.New("modem not initialized")
+	}
+
+	// Clean phone number (remove spaces, ensure + prefix for international)
+	phoneNumber = strings.TrimSpace(phoneNumber)
+	if phoneNumber == "" {
+		return errors.New("phone number is required")
+	}
+	if message == "" {
+		return errors.New("message is required")
+	}
+
+	if _, err := w.ExecuteAT("AT+CMGF=0", 5*time.Second); err != nil {
+		return fmt.Errorf("failed to set PDU mode: %w", err)
+	}
+
+	// Encode the SMS to PDU format using warthog618/sms library
+	// We need to create a SUBMIT TPDU (Mobile Originated)
+	tpdus, err := sms.Encode([]byte(message), sms.AsSubmit, sms.To(phoneNumber))
+	if err != nil {
+		return fmt.Errorf("failed to encode SMS: %w", err)
+	}
+
+	logger.Log.Infof("[%s] Sending SMS to %s: %s (PDUs: %d)", w.PortName, phoneNumber, message, len(tpdus))
+
+	// Send each PDU segment
+	for i, t := range tpdus {
+		// Marshal TPDU to bytes (without SMSC address)
+		pduBytes, err := t.MarshalBinary()
+		if err != nil {
+			return fmt.Errorf("failed to marshal PDU %d: %w", i+1, err)
+		}
+
+		// Create PDU with empty SMSC (let modem use default)
+		// SMSC length = 0 means use modem's default SMSC
+		fullPDU := append([]byte{0x00}, pduBytes...)
+		pduHex := strings.ToUpper(hex.EncodeToString(fullPDU))
+
+		// Length for AT+CMGS is the TPDU length excluding SMSC (in bytes)
+		tpduLen := len(pduBytes)
+		pduCmd := pduHex + "\x1A"
+
+		logger.Log.Debugf("[%s] PDU %d/%d: len=%d, hex=%s", w.PortName, i+1, len(tpdus), tpduLen, pduHex)
+
+		// Step 1: Send AT+CMGS=<length> and wait for ">" prompt
+		cmd := fmt.Sprintf("AT+CMGS=%d", tpduLen)
+		resp, err := w.ExecuteAT(cmd, 20*time.Second)
+		promptReady := false
+		if err == nil && strings.Contains(resp, ">") {
+			promptReady = true
+		}
+
+		if err != nil {
+			errText := strings.ToLower(err.Error())
+			if strings.Contains(errText, "timeout") {
+				logger.Log.Warnf("[%s] CMGS prompt timeout, trying blind PDU submit", w.PortName)
+			} else {
+				return fmt.Errorf("AT+CMGS failed: %w", err)
+			}
+		} else if !promptReady {
+			logger.Log.Warnf("[%s] CMGS prompt not parsed (%q), trying blind PDU submit", w.PortName, resp)
+		}
+
+		// Step 2: Send PDU hex followed by Ctrl+Z (0x1A)
+		resp, err = w.ExecuteAT(pduCmd, 60*time.Second)
+		if err != nil {
+			_, _ = w.ExecuteATSilent("\x1A", 2*time.Second)
+			return fmt.Errorf("failed to send PDU: %w", err)
+		}
+
+		// Check for +CMGS: <mr> response indicating success
+		if !strings.Contains(resp, "+CMGS:") {
+			return fmt.Errorf("SMS send failed, response: %s", resp)
+		}
+
+		logger.Log.Infof("[%s] PDU %d/%d sent successfully", w.PortName, i+1, len(tpdus))
+	}
+
+	logger.Log.Infof("[%s] SMS sent successfully to %s", w.PortName, phoneNumber)
+	return nil
+}
+
+// Helper to get TPDU alphabet type - used for debugging
+func getTpduAlphabet(t *tpdu.TPDU) string {
+	alpha, err := t.DCS.Alphabet()
+	if err != nil {
+		return "unknown"
+	}
+	switch alpha {
+	case tpdu.Alpha7Bit:
+		return "GSM7"
+	case tpdu.Alpha8Bit:
+		return "8bit"
+	case tpdu.AlphaUCS2:
+		return "UCS2"
+	default:
+		return "unknown"
+	}
 }

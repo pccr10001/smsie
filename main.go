@@ -87,6 +87,7 @@ func main() {
 			authGroup.POST("/modems/:iccid/operator", mh.SetOperator)
 			authGroup.POST("/modems/:iccid/at", mh.ExecuteAT)
 			authGroup.POST("/modems/:iccid/input", mh.ExecuteInput)
+			authGroup.POST("/modems/:iccid/send", mh.SendSMS)
 			authGroup.GET("/sms", sh.ListSMS)
 
 			// Admin Only

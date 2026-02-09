@@ -538,6 +538,10 @@ window.showModemSettings = function (iccid) {
     $('#scan-results').empty();
     $('#at-log').val("");
     $('#at-input').val("");
+    // Clear SMS form
+    $('#sms-phone').val("");
+    $('#sms-content').val("");
+    $('#sms-send-status').empty();
 
     // Fetch current details
     $.get('/api/v1/modems/' + iccid, function (m) {
@@ -549,6 +553,52 @@ window.showModemSettings = function (iccid) {
 
     $('#modemModal').modal('show');
 }
+
+// Send SMS Handler
+$('#btn-send-sms').click(function () {
+    const iccid = $('#m-iccid').val();
+    const phone = $('#sms-phone').val().trim();
+    const message = $('#sms-content').val().trim();
+    const statusDiv = $('#sms-send-status');
+    const btn = $(this);
+
+    if (!phone) {
+        statusDiv.html('<span class="text-danger">Please enter a phone number</span>');
+        return;
+    }
+    if (!message) {
+        statusDiv.html('<span class="text-danger">Please enter a message</span>');
+        return;
+    }
+
+    btn.prop('disabled', true).html('<span class="spinner-border spinner-border-sm"></span> Sending...');
+    statusDiv.html('<span class="text-muted">Sending SMS...</span>');
+
+    $.ajax({
+        url: `/api/v1/modems/${iccid}/send`,
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ phone: phone, message: message }),
+        success: function (resp) {
+            statusDiv.html('<span class="text-success"><i class="bi bi-check-circle"></i> SMS sent successfully!</span>');
+            // Clear form on success
+            $('#sms-phone').val("");
+            $('#sms-content').val("");
+        },
+        error: function (xhr) {
+            let msg = "Failed to send SMS";
+            if (xhr.responseJSON && xhr.responseJSON.error) {
+                msg = xhr.responseJSON.error;
+            } else if (xhr.responseText) {
+                msg = xhr.responseText;
+            }
+            statusDiv.html(`<span class="text-danger"><i class="bi bi-x-circle"></i> ${msg}</span>`);
+        },
+        complete: function () {
+            btn.prop('disabled', false).html('<i class="bi bi-send"></i> Send SMS');
+        }
+    });
+});
 
 $('#btn-save-modem').click(function () {
     const iccid = $('#m-iccid').val();

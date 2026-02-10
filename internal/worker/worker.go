@@ -327,7 +327,10 @@ func (w *ModemWorker) initModem() {
 		}
 
 		// Probe UAC status by QCFG USBCFG
-		if ok, probeErr := w.probeUACEnabled(); probeErr != nil {
+		if !callingEnabled() {
+			w.setUACReady(false)
+			logger.Log.Infof("[%s] UAC/calling disabled by build tag", w.PortName)
+		} else if ok, probeErr := w.probeUACEnabled(); probeErr != nil {
 			logger.Log.Warnf("[%s] UAC probe failed: %v", w.PortName, probeErr)
 			w.setUACReady(false)
 		} else {
@@ -573,6 +576,10 @@ func (w *ModemWorker) handleURC(line string) {
 }
 
 func (w *ModemWorker) shouldHandleCallURC(line string) bool {
+	if !callingEnabled() {
+		return false
+	}
+
 	upper := strings.ToUpper(strings.TrimSpace(line))
 	if upper == "" {
 		return false
@@ -663,6 +670,10 @@ func (w *ModemWorker) setCallState(state, reason string) {
 }
 
 func (w *ModemWorker) Dial(number string) error {
+	if !callingEnabled() {
+		return errors.New("calling disabled in this build")
+	}
+
 	number = strings.TrimSpace(number)
 	if number == "" || !dialNumberPattern.MatchString(number) {
 		return errInvalidDialNumber
@@ -695,6 +706,10 @@ func (w *ModemWorker) Dial(number string) error {
 }
 
 func (w *ModemWorker) Hangup() error {
+	if !callingEnabled() {
+		return errors.New("calling disabled in this build")
+	}
+
 	w.callOpMu.Lock()
 	defer w.callOpMu.Unlock()
 
@@ -1007,6 +1022,10 @@ func (w *ModemWorker) SendSMS(phoneNumber, message string) error {
 }
 
 func (w *ModemWorker) Reboot() error {
+	if !callingEnabled() {
+		return errors.New("calling disabled in this build")
+	}
+
 	w.SetBusy(true)
 	defer w.SetBusy(false)
 

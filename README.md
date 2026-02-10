@@ -55,7 +55,7 @@
 3.  **Build the application:**
     ```bash
     sudo apt install portaudio19-dev libusb-1.0-0-dev ffmpeg
-    go build
+    go build # -tags nouac to disable UAC
     ```
 
 ### Windows
@@ -63,7 +63,7 @@
     ```bash
    # Use mingw64 to build.
    pacman -S  mingw-w64-x86_64-ffmpeg  mingw-w64-x86_64-portaudio  mingw-w64-x86_64-libusb
-    go build
+    go build # -tags nouac to disable UAC
     ```
 
 ## ⚙️ Configuration

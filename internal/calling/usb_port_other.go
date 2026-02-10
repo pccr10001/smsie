@@ -1,4 +1,4 @@
-//go:build !windows && !linux
+//go:build !nouac && !windows && !linux
 
 package calling
 

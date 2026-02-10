@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-linux-amd64:
-    name: Build Linux amd64 Binary
+  build-uac-linux-amd64:
+    name: Build UAC Linux amd64 Binary
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -22,18 +22,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y portaudio19-dev libusb-1.0-0-dev ffmpeg pkg-config
 
-      - name: Build Linux amd64 Binary
+      - name: Build UAC Linux amd64 Binary
         run: |
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -v -o smsie-linux-amd64 main.go
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: binaries-linux-amd64
+          name: binaries-uac-linux-amd64
           path: smsie-linux-amd64
 
-  build-linux-arm64:
-    name: Build Linux arm64 Binary
+  build-uac-linux-arm64:
+    name: Build UAC Linux arm64 Binary
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -42,7 +42,7 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      - name: Build Linux arm64 Binary
+      - name: Build UAC Linux arm64 Binary
         run: |
           docker run --rm --platform linux/arm64/v8 \
             -v "${{ github.workspace }}:/src" \
@@ -53,11 +53,11 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: binaries-linux-arm64
+          name: binaries-uac-linux-arm64
           path: smsie-linux-arm64
 
-  build-linux-arm:
-    name: Build Linux arm Binary
+  build-uac-linux-arm:
+    name: Build UAC Linux arm Binary
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -66,7 +66,7 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      - name: Build Linux arm Binary
+      - name: Build UAC Linux arm Binary
         run: |
           docker run --rm --platform linux/arm/v7 \
             -v "${{ github.workspace }}:/src" \
@@ -77,11 +77,11 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: binaries-linux-arm
+          name: binaries-uac-linux-arm
           path: smsie-linux-arm
 
-  build-windows:
-    name: Build Windows Binary (MSYS2 MinGW64)
+  build-uac-windows:
+    name: Build UAC Windows Binary
     runs-on: windows-latest
     steps:
       - name: Checkout code
@@ -106,7 +106,7 @@ jobs:
             mingw-w64-x86_64-libusb
             mingw-w64-x86_64-ffmpeg
 
-      - name: Build Windows amd64 Binary (CGO)
+      - name: Build UAC Windows Binary
         shell: msys2 {0}
         run: |
           export CGO_ENABLED=1
@@ -117,13 +117,13 @@ jobs:
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: binaries-windows
+          name: binaries-uac-windows
           path: smsie-windows-amd64.exe
 
-  build-container:
-    name: Build Container
+  build-uac-container:
+    name: Build UAC Container
     runs-on: ubuntu-latest
-    needs: build-linux-amd64 # Optional, can run in parallel
+    needs: [build-uac-linux-amd64, build-uac-linux-arm64, build-uac-linux-arm]
     permissions:
       contents: read
       packages: write
@@ -167,8 +167,102 @@ jobs:
         with:
           context: .
           push: true
-          # Enable multi-platform build for Linux amd64, arm64, and arm v7
           platforms: linux/amd64,linux/arm64,linux/arm/v7
+          build-args: |
+            GO_BUILD_TAGS=
+          tags: ${{ steps.image-tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-nouac-binaries:
+    name: Build noUAC Binaries (all arch, CGO off)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Build noUAC Linux amd64 Binary
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags nouac -v -o smsie-linux-amd64-nouac main.go
+
+      - name: Build noUAC Linux arm64 Binary
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags nouac -v -o smsie-linux-arm64-nouac main.go
+
+      - name: Build noUAC Linux arm Binary
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -tags nouac -v -o smsie-linux-arm-nouac main.go
+
+      - name: Build noUAC Windows amd64 Binary
+        run: |
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags nouac -v -o smsie-windows-amd64-nouac.exe main.go
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-nouac
+          path: |
+            smsie-linux-amd64-nouac
+            smsie-linux-arm64-nouac
+            smsie-linux-arm-nouac
+            smsie-windows-amd64-nouac.exe
+
+  build-nouac-container:
+    name: Build noUAC Container
+    runs-on: ubuntu-latest
+    needs: build-nouac-binaries
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare image tags
+        id: image-tags
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            {
+              echo "tags<<EOF"
+              echo "ghcr.io/${GITHUB_REPOSITORY}:latest-nouac"
+              echo "ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_REF_NAME}-nouac"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "tags<<EOF"
+              echo "ghcr.io/${GITHUB_REPOSITORY}:latest-nouac"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          build-args: |
+            GO_BUILD_TAGS=nouac
           tags: ${{ steps.image-tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -177,7 +271,14 @@ jobs:
     name: Upload Artifacts to Existing Release
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [build-linux-amd64, build-linux-arm64, build-linux-arm, build-windows, build-container]
+    needs:
+      - build-uac-linux-amd64
+      - build-uac-linux-arm64
+      - build-uac-linux-arm
+      - build-uac-windows
+      - build-uac-container
+      - build-nouac-binaries
+      - build-nouac-container
     permissions:
       contents: write
     steps:
@@ -189,16 +290,23 @@ jobs:
 
       - name: Upload/Replace Release Assets
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           TAG="${GITHUB_REF_NAME}"
           echo "Uploading assets to existing release: ${TAG}"
 
-          gh release view "${TAG}" >/dev/null
+          gh release view "${TAG}" --repo "${GH_REPO}" >/dev/null
 
           gh release upload "${TAG}" \
+            --repo "${GH_REPO}" \
             smsie-linux-amd64 \
+            smsie-linux-amd64-nouac \
             smsie-linux-arm64 \
+            smsie-linux-arm64-nouac \
             smsie-linux-arm \
+            smsie-linux-arm-nouac \
             smsie-windows-amd64.exe \
+            smsie-windows-amd64-nouac.exe \
             --clobber
+

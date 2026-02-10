@@ -3,6 +3,8 @@ FROM golang:1.25-bookworm AS builder
 
 WORKDIR /app
 
+ARG GO_BUILD_TAGS=""
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     portaudio19-dev \
@@ -17,7 +19,7 @@ RUN GOTOOLCHAIN=auto go mod download
 COPY . .
 
 # Build CGO binary for target platform.
-RUN GOTOOLCHAIN=auto CGO_ENABLED=1 go build -o smsie main.go
+RUN GOTOOLCHAIN=auto CGO_ENABLED=1 go build ${GO_BUILD_TAGS:+-tags ${GO_BUILD_TAGS}} -o smsie main.go
 
 # Runtime Stage
 FROM debian:bookworm-slim

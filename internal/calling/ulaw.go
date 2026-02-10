@@ -1,3 +1,5 @@
+//go:build !nouac
+
 package calling
 
 const (

@@ -19,6 +19,11 @@ type ModemHandler struct {
 	callMgr *calling.Manager
 }
 
+type modemWithWorker struct {
+	model.Modem
+	WorkerExists bool `json:"worker_exists"`
+}
+
 func NewModemHandler(db *gorm.DB, wm *worker.Manager, callMgr *calling.Manager) *ModemHandler {
 	return &ModemHandler{db: db, wm: wm, callMgr: callMgr}
 }
@@ -51,7 +56,16 @@ func (h *ModemHandler) ListModems(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, modems)
+
+	resp := make([]modemWithWorker, 0, len(modems))
+	for _, m := range modems {
+		resp = append(resp, modemWithWorker{
+			Modem:        m,
+			WorkerExists: h.wm.GetWorkerByICCID(m.ICCID) != nil,
+		})
+	}
+
+	c.JSON(http.StatusOK, resp)
 }
 
 func splitAllowed(s string) []string {
@@ -71,7 +85,10 @@ func (h *ModemHandler) GetModem(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Modem not found"})
 		return
 	}
-	c.JSON(http.StatusOK, modem)
+	c.JSON(http.StatusOK, modemWithWorker{
+		Modem:        modem,
+		WorkerExists: h.wm.GetWorkerByICCID(modem.ICCID) != nil,
+	})
 }
 
 func (h *ModemHandler) UpdateModem(c *gin.Context) {

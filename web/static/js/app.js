@@ -519,11 +519,14 @@ function loadModems() {
             // Update List View
             if (!$('#view-modems').hasClass('d-none')) {
                 const statusClass = m.status === 'online' ? 'online' : 'offline';
+                const workerExists = !(Object.prototype.hasOwnProperty.call(m, 'worker_exists')) || !!m.worker_exists;
+                const statusText = workerExists ? (m.status || 'offline') : 'Not Exists';
                 list.append(`
                     <div class="col-md-4 mb-3">
                         <div class="card p-3">
                             <h5><span class="connection-status-dot ${statusClass}"></span> ${getFlagFromICCID(m.iccid)} ${m.name ? m.name : m.iccid}</h5>
                             ${m.name ? `<p class="mb-1 text-muted small">${m.iccid}</p>` : ''}
+                            <p class="mb-1"><strong>Status:</strong> ${statusText}</p>
                             <p class="mb-1"><strong>IMEI:</strong> ${m.imei}</p>
                             <p class="mb-1"><strong>${window.t('operator')}:</strong> ${m.operator || 'Not Registered'}</p>
                             <p class="mb-1"><strong>${window.t('registration')}:</strong> ${m.registration || 'Unknown'}</p>

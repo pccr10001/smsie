@@ -29,35 +29,98 @@ func pickUACAudioDevice(cfg AudioConfig, target ModemTarget) (*uacAudioDevice, e
 		return nil, idErr
 	}
 
-	usbList, _ := EnumerateByVIDPID(identity.VID, identity.PID)
+	usbList, enumErr := EnumerateByVIDPID(identity.VID, identity.PID)
+	if enumErr != nil {
+		usbList = nil
+	}
+
+	targetHints := map[string]struct{}{}
+	addHint := func(v string) {
+		n := normalize(v)
+		if n == "" {
+			return
+		}
+		targetHints[n] = struct{}{}
+	}
+	addHint(identity.VID)
+	addHint(identity.PID)
+	for _, h := range ResolveALSACardHintsFromPort(target) {
+		addHint(h)
+	}
+
 	hasTargetUSBAudio := false
 	for _, d := range usbList {
 		if d.HasAudio {
 			hasTargetUSBAudio = true
+			addHint(d.Product)
 			break
 		}
 	}
 
-	var inDevice, outDevice *portaudio.DeviceInfo
-	for _, d := range devices {
-		name := normalize(d.Name)
-
-		if keyword != "" && !strings.Contains(name, keyword) {
-			continue
-		}
-
-		if hasTargetUSBAudio {
-			if !strings.Contains(name, normalize(identity.VID)) && !strings.Contains(name, normalize(identity.PID)) {
-				// Best effort: if device name doesn't include VID/PID hints, still allow keyword matching fallback.
+	hasAnyTargetHint := func(name string) bool {
+		for hint := range targetHints {
+			if strings.Contains(name, hint) {
+				return true
 			}
 		}
+		return false
+	}
 
-		if inDevice == nil && d.MaxInputChannels > 0 {
-			inDevice = d
+	hasGenericUSBHint := func(name string) bool {
+		return strings.Contains(name, "usb") || strings.Contains(name, "ac interface") || strings.Contains(name, "android")
+	}
+
+	findPair := func(filter func(name string) bool) (*portaudio.DeviceInfo, *portaudio.DeviceInfo) {
+		var in, out *portaudio.DeviceInfo
+		for _, d := range devices {
+			name := normalize(d.Name)
+			if !filter(name) {
+				continue
+			}
+			if in == nil && d.MaxInputChannels > 0 {
+				in = d
+			}
+			if out == nil && d.MaxOutputChannels > 0 {
+				out = d
+			}
+			if in != nil && out != nil {
+				break
+			}
 		}
-		if outDevice == nil && d.MaxOutputChannels > 0 {
-			outDevice = d
-		}
+		return in, out
+	}
+
+	var inDevice, outDevice *portaudio.DeviceInfo
+
+	if keyword != "" && hasTargetUSBAudio {
+		inDevice, outDevice = findPair(func(name string) bool {
+			return strings.Contains(name, keyword) && hasAnyTargetHint(name)
+		})
+	}
+	if (inDevice == nil || outDevice == nil) && hasTargetUSBAudio {
+		inDevice, outDevice = findPair(func(name string) bool {
+			return hasAnyTargetHint(name)
+		})
+	}
+	if inDevice == nil || outDevice == nil {
+		inDevice, outDevice = findPair(func(name string) bool {
+			return keyword != "" && strings.Contains(name, keyword) && hasGenericUSBHint(name)
+		})
+	}
+	if inDevice == nil || outDevice == nil {
+		inDevice, outDevice = findPair(func(name string) bool {
+			return hasGenericUSBHint(name)
+		})
+	}
+	if (inDevice == nil || outDevice == nil) && keyword != "" {
+		inDevice, outDevice = findPair(func(name string) bool {
+			return strings.Contains(name, keyword)
+		})
+	}
+	if inDevice == nil || outDevice == nil {
+		inDevice, outDevice = findPair(func(name string) bool {
+			return true
+		})
 	}
 
 	if inDevice == nil || outDevice == nil {

@@ -4,6 +4,8 @@ package calling
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/google/gousb"
 )
@@ -11,6 +13,12 @@ import (
 func ResolveUSBIdentityFromPort(target ModemTarget) (USBIdentity, error) {
 	if target.VID == "" || target.PID == "" {
 		return USBIdentity{}, fmt.Errorf("missing VID/PID for port %s", target.PortName)
+	}
+
+	fallback := USBIdentity{
+		VID:    normalizeUSBHex(target.VID),
+		PID:    normalizeUSBHex(target.PID),
+		Serial: strings.TrimSpace(target.Serial),
 	}
 
 	ctx := gousb.NewContext()
@@ -29,7 +37,7 @@ func ResolveUSBIdentityFromPort(target ModemTarget) (USBIdentity, error) {
 		return desc.Vendor == gousb.ID(vid) && desc.Product == gousb.ID(pid)
 	})
 	if err != nil {
-		return USBIdentity{}, err
+		return fallback, nil
 	}
 	defer func() {
 		for _, d := range opened {
@@ -38,7 +46,7 @@ func ResolveUSBIdentityFromPort(target ModemTarget) (USBIdentity, error) {
 	}()
 
 	if len(opened) == 0 {
-		return USBIdentity{}, fmt.Errorf("usb device not found for vid=%s pid=%s", target.VID, target.PID)
+		return fallback, nil
 	}
 
 	chosen := opened[0]
@@ -64,4 +72,17 @@ func ResolveUSBIdentityFromPort(target ModemTarget) (USBIdentity, error) {
 		Bus:     int(chosen.Desc.Bus),
 		Address: int(chosen.Desc.Address),
 	}, nil
+}
+
+func normalizeUSBHex(v string) string {
+	x := strings.TrimSpace(strings.ToLower(v))
+	x = strings.TrimPrefix(x, "0x")
+	if x == "" {
+		return ""
+	}
+	n, err := strconv.ParseUint(x, 16, 16)
+	if err != nil {
+		return strings.ToUpper(x)
+	}
+	return fmt.Sprintf("%04X", uint16(n))
 }

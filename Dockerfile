@@ -1,28 +1,36 @@
 # Build Stage
-FROM golang:1.24-alpine AS builder
+FROM golang:1.24-bullseye AS builder
 
 WORKDIR /app
 
-# Install git if needed for dependencies (though go mod tidy should have handled it)
-# Alpine base is fine for CGO_ENABLED=0
-RUN apk add --no-cache git
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    portaudio19-dev \
+    libusb-1.0-0-dev \
+    ffmpeg \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
 
-# Build the binary
-# CGO_ENABLED=0 is preferred for static binary, and we are using glebarez/sqlite which is pure Go.
-RUN CGO_ENABLED=0 GOOS=linux go build -o smsie main.go
+# Build CGO binary for target platform.
+RUN CGO_ENABLED=1 go build -o smsie main.go
 
 # Runtime Stage
-FROM alpine:latest
+FROM debian:bullseye-slim
 
 WORKDIR /app
 
-# Install any runtime dependencies if needed (e.g. ca-certificates for HTTPS/Webhooks)
-RUN apk add --no-cache ca-certificates tzdata
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    tzdata \
+    ffmpeg \
+    libusb-1.0-0 \
+    libportaudio2 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy binary
 COPY --from=builder /app/smsie .

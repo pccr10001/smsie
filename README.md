@@ -54,7 +54,7 @@
 
 3.  **Build the application:**
     ```bash
-    sudo apt install portaudio19-dev libusb-dev ffmpeg
+    sudo apt install portaudio19-dev libusb-1.0-0-dev ffmpeg
     go build
     ```
 

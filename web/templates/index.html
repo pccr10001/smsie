@@ -63,6 +63,10 @@
       .offline {
         background-color: #dc3545;
       }
+      .dtmf-grid .btn {
+        min-height: 44px;
+        font-weight: 600;
+      }
     </style>
   </head>
   <body>
@@ -430,6 +434,7 @@
               <div class="form-text text-danger">
                 This will reboot modem immediately and disconnect current session.
               </div>
+              <div id="modem-status" class="mt-2 small text-muted"></div>
             </div>
             <hr />
             <h6>AT Command Terminal</h6>
@@ -474,36 +479,6 @@
               </button>
             </div>
             <hr />
-            <div id="call-section" class="d-none">
-            <h6>Voice Call</h6>
-            <div class="mb-2">
-              <label class="form-label">Phone Number</label>
-              <div class="input-group">
-                <input
-                  type="text"
-                  class="form-control"
-                  id="call-phone"
-                  placeholder="09xxxxxxxx"
-                />
-                <button
-                  class="btn btn-outline-primary"
-                  type="button"
-                  id="btn-call-dial"
-                >
-                  Dial
-                </button>
-                <button
-                  class="btn btn-outline-danger"
-                  type="button"
-                  id="btn-call-hangup"
-                >
-                  Hangup
-                </button>
-              </div>
-              <div id="call-status" class="mt-2 small text-muted"></div>
-            </div>
-            </div>
-            <hr />
             <h6>Send SMS</h6>
             <div class="mb-2">
               <label class="form-label">Phone Number</label>
@@ -538,6 +513,89 @@
             </button>
             <button type="button" class="btn btn-primary" id="btn-save-modem">
               Save
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Call Modal -->
+    <div class="modal fade" id="callModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">
+              Voice Call: <span id="call-iccid-title"></span>
+            </h5>
+            <button
+              type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" id="call-iccid" />
+            <div id="call-not-ready" class="alert alert-warning d-none mb-3"></div>
+            <div id="call-panel" class="d-none">
+              <div class="mb-3">
+                <label class="form-label">Phone Number</label>
+                <div class="input-group">
+                  <input
+                    type="text"
+                    class="form-control"
+                    id="call-phone"
+                    placeholder="09xxxxxxxx"
+                  />
+                  <button
+                    class="btn btn-outline-primary"
+                    type="button"
+                    id="btn-call-dial"
+                  >
+                    Dial
+                  </button>
+                  <button
+                    class="btn btn-outline-danger"
+                    type="button"
+                    id="btn-call-hangup"
+                  >
+                    Hangup
+                  </button>
+                </div>
+                <div id="call-status" class="mt-2 small text-muted">Call state: idle</div>
+              </div>
+              <hr />
+              <h6 class="mb-2">DTMF Keypad</h6>
+              <div id="call-dtmf" class="dtmf-grid">
+                <div class="row g-2 mb-2">
+                  <div class="col-4"><button type="button" class="btn btn-outline-secondary w-100 btn-dtmf" data-tone="1">1</button></div>
+                  <div class="col-4"><button type="button" class="btn btn-outline-secondary w-100 btn-dtmf" data-tone="2">2</button></div>
+                  <div class="col-4"><button type="button" class="btn btn-outline-secondary w-100 btn-dtmf" data-tone="3">3</button></div>
+                </div>
+                <div class="row g-2 mb-2">
+                  <div class="col-4"><button type="button" class="btn btn-outline-secondary w-100 btn-dtmf" data-tone="4">4</button></div>
+                  <div class="col-4"><button type="button" class="btn btn-outline-secondary w-100 btn-dtmf" data-tone="5">5</button></div>
+                  <div class="col-4"><button type="button" class="btn btn-outline-secondary w-100 btn-dtmf" data-tone="6">6</button></div>
+                </div>
+                <div class="row g-2 mb-2">
+                  <div class="col-4"><button type="button" class="btn btn-outline-secondary w-100 btn-dtmf" data-tone="7">7</button></div>
+                  <div class="col-4"><button type="button" class="btn btn-outline-secondary w-100 btn-dtmf" data-tone="8">8</button></div>
+                  <div class="col-4"><button type="button" class="btn btn-outline-secondary w-100 btn-dtmf" data-tone="9">9</button></div>
+                </div>
+                <div class="row g-2">
+                  <div class="col-4"><button type="button" class="btn btn-outline-secondary w-100 btn-dtmf" data-tone="*">*</button></div>
+                  <div class="col-4"><button type="button" class="btn btn-outline-secondary w-100 btn-dtmf" data-tone="0">0</button></div>
+                  <div class="col-4"><button type="button" class="btn btn-outline-secondary w-100 btn-dtmf" data-tone="#">#</button></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              data-bs-dismiss="modal"
+            >
+              Close
             </button>
           </div>
         </div>

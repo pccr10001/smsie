@@ -52,19 +52,29 @@ function refreshCallStateUI(iccid) {
 
         const hasUACFlag = !!(state && Object.prototype.hasOwnProperty.call(state, 'uac_ready'));
         const uacReady = !!(state && (state.uac_ready === true || state.uac_ready === 'true' || state.uac_ready === 1));
+        const callState = state && state.state ? state.state : 'idle';
+        const canSendDTMF = callState === 'dialing' || callState === 'in_call';
 
         if (hasUACFlag && !uacReady) {
-            $('#call-section').addClass('d-none');
+            $('#call-panel').addClass('d-none');
+            $('#call-not-ready').removeClass('d-none').text('UAC is not enabled on this modem.');
+            $('#btn-call-dial').prop('disabled', true);
+            $('#btn-call-hangup').prop('disabled', true);
+            $('.btn-dtmf').prop('disabled', true);
         } else {
-            $('#call-section').removeClass('d-none');
+            $('#call-not-ready').addClass('d-none').text('');
+            $('#call-panel').removeClass('d-none');
             $('#btn-call-dial').prop('disabled', false);
             $('#btn-call-hangup').prop('disabled', false);
+            $('.btn-dtmf').prop('disabled', !canSendDTMF);
         }
     }).fail(function (xhr) {
         const msg = xhr && xhr.responseJSON && xhr.responseJSON.error ? xhr.responseJSON.error : 'call state unavailable';
-        $('#call-section').removeClass('d-none');
+        $('#call-panel').addClass('d-none');
+        $('#call-not-ready').removeClass('d-none').text(msg);
         $('#btn-call-dial').prop('disabled', true);
         $('#btn-call-hangup').prop('disabled', true);
+        $('.btn-dtmf').prop('disabled', true);
         $('#call-status').text(`Call state error: ${msg}`);
     });
 }
@@ -534,6 +544,7 @@ function loadModems() {
                             <p class="text-muted small">Port: ${m.port_name}</p>
                             ${auth.role === 'admin' ?
                         `<button class="btn btn-sm btn-outline-secondary w-100 mt-2" onclick="manageWebhooks('${m.iccid}')">${window.t('webhooks') || 'Webhooks'}</button>
+                                 <button class="btn btn-sm btn-outline-success w-100 mt-1" onclick="showCallModal('${m.iccid}')">Call</button>
                                  <button class="btn btn-sm btn-outline-primary w-100 mt-1" onclick="showModemSettings('${m.iccid}')">${window.t('settings') || 'Settings'}</button>`
                         : ''}
                         </div>
@@ -709,11 +720,7 @@ window.showModemSettings = function (iccid) {
     $('#sms-phone').val("");
     $('#sms-content').val("");
     $('#sms-send-status').empty();
-    $('#call-phone').val("");
-    $('#call-status').text('Call state: idle');
-    $('#call-section').addClass('d-none');
-    stopCallStatePolling();
-    closeCallSignaling();
+    $('#modem-status').text('');
 
     // Fetch current details
     $.get('/api/v1/modems/' + iccid, function (m) {
@@ -723,23 +730,40 @@ window.showModemSettings = function (iccid) {
         }
     });
 
-    refreshCallStateUI(iccid);
-    callStatePollTimer = setInterval(function () {
-        if ($('#modemModal').hasClass('show')) {
-            refreshCallStateUI(iccid);
-        }
-    }, 2000);
-
     $('#modemModal').modal('show');
 }
 
 $('#modemModal').on('hidden.bs.modal', function () {
+    $('#modem-status').text('');
+});
+
+window.showCallModal = function (iccid) {
+    $('#call-iccid-title').text(iccid);
+    $('#call-iccid').val(iccid);
+    $('#call-phone').val('');
+    $('#call-status').text('Call state: idle');
+    $('#call-panel').addClass('d-none');
+    $('#call-not-ready').addClass('d-none').text('');
+    stopCallStatePolling();
+    closeCallSignaling();
+
+    refreshCallStateUI(iccid);
+    callStatePollTimer = setInterval(function () {
+        if ($('#callModal').hasClass('show')) {
+            refreshCallStateUI(iccid);
+        }
+    }, 2000);
+
+    $('#callModal').modal('show');
+}
+
+$('#callModal').on('hidden.bs.modal', function () {
     stopCallStatePolling();
     closeCallSignaling();
 });
 
 $(document).on('click', '#btn-call-dial', function () {
-    const iccid = $('#m-iccid').val();
+    const iccid = $('#call-iccid').val();
     const number = $('#call-phone').val().trim();
     const statusDiv = $('#call-status');
     const dialBtn = $(this);
@@ -795,7 +819,7 @@ $(document).on('click', '#btn-call-dial', function () {
 });
 
 $(document).on('click', '#btn-call-hangup', function () {
-    const iccid = $('#m-iccid').val();
+    const iccid = $('#call-iccid').val();
     const statusDiv = $('#call-status');
     const dialBtn = $('#btn-call-dial');
     const hangupBtn = $(this);
@@ -829,10 +853,43 @@ $(document).on('click', '#btn-call-hangup', function () {
     });
 });
 
+$(document).on('click', '.btn-dtmf', function () {
+    const iccid = $('#call-iccid').val();
+    const tone = String($(this).data('tone') || '').trim();
+    const statusDiv = $('#call-status');
+
+    if (!/^[0-9*#]$/.test(tone)) {
+        return;
+    }
+    if (!iccid) {
+        statusDiv.html('<span class="text-danger">Modem not selected</span>');
+        return;
+    }
+
+    $.ajax({
+        url: `/api/v1/modems/${iccid}/at`,
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ cmd: `AT+VTS="${tone}"`, timeout: 5000 }),
+        success: function () {
+            statusDiv.html(`<span class="text-muted">DTMF sent: ${tone}</span>`);
+        },
+        error: function (xhr) {
+            let msg = 'DTMF failed';
+            if (xhr.responseJSON && xhr.responseJSON.error) {
+                msg = xhr.responseJSON.error;
+            } else if (xhr.responseText) {
+                msg = xhr.responseText;
+            }
+            statusDiv.html(`<span class="text-danger">${msg}</span>`);
+        }
+    });
+});
+
 $(document).on('click', '#btn-reboot-modem', function () {
     const iccid = $('#m-iccid').val();
     const btn = $(this);
-    const statusDiv = $('#call-status');
+    const statusDiv = $('#modem-status');
 
     if (!confirm('Reboot modem now? (AT+CFUN=1,1)')) {
         return;
@@ -846,7 +903,6 @@ $(document).on('click', '#btn-reboot-modem', function () {
         method: 'POST',
         success: function () {
             closeCallSignaling();
-            $('#call-section').addClass('d-none');
             statusDiv.html('<span class="text-success">Reboot command sent. Wait for modem to reconnect.</span>');
         },
         error: function (xhr) {

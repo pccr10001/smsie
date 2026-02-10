@@ -110,7 +110,7 @@ log:
 
 ## Voice Calling (Quectel UAC)
 
-- On modem probe, smsie sends `AT+QCFG="usbcfg"`.
+- On modem probe, smsie sends `AT+QCFG="usbcfg"` to check UAC support.
 - smsie checks the trailing 7 flags of `+QCFG: "USBCFG",...` and requires the last flag to be `1` (UAC enabled).
 - Only when UAC is ready will the dial UI appear in frontend.
 - On dial:
@@ -121,6 +121,63 @@ log:
 - USB/UAC matching is automatic:
   - Uses modem port (`COMx`/`ttyUSBx`) to resolve USB identity.
   - Uses QCFG-derived VID/PID and USB enumeration (`gousb`) to locate target UAC device.
+
+## Enable UAC on modem
+- Send `AT+QCFG="usbcfg",0x2C7C,0x0125,1,1,1,1,1,1,1` in AT command terminal.
+
+## Enable VoLTE on modem
+```
+# Enable IMS
+AT+QCFG="ims",1
+
+OK
+
+# Check MBN config in modem, `2,1,1` is mean `OpenMkt-Commercial-CT` is selected and activated
+AT+QMBNCFG="List"
+
++QMBNCFG: "List",0,0,0,"ROW_Generic_3GPP",0x05010824,201806201
++QMBNCFG: "List",1,0,0,"OpenMkt-Commercial-CU",0x05011510,201911151
++QMBNCFG: "List",2,1,1,"OpenMkt-Commercial-CT",0x0501131C,201911141
++QMBNCFG: "List",3,0,0,"Volte_OpenMkt-Commercial-CMCC",0x05012011,201904261
+
+OK
+
+# We ned to select generic MBN profile to register with IMS
+# Disable auto selecting MBN profile
+AT+QMBNCFG="AutoSel",0
+
+OK
+
+# Deactivate current MBN profile
+AT+QMBNCFG="deactivate"
+
+OK
+
+# Activate generic MBN profile
+AT+QMBNCFG="select","ROW_Generic_3GPP"
+
+OK
+
+# Reboot modem
+AT+CFUN=1,1
+
+# Check MBN profiles
+AT+QMBNCFG="List"
+
++QMBNCFG: "List",0,1,1,"ROW_Generic_3GPP",0x05010824,201806201
++QMBNCFG: "List",1,0,0,"OpenMkt-Commercial-CU",0x05011510,201911151
++QMBNCFG: "List",2,0,0,"OpenMkt-Commercial-CT",0x0501131C,201911141
++QMBNCFG: "List",3,0,0,"Volte_OpenMkt-Commercial-CMCC",0x05012011,201904261
+
+OK
+
+# Check status of IMS
+AT+QCFG="ims"
+
++QCFG: "ims",1,1    # `1,1` is mean IMS is activated
+
+OK
+```
 
 ## Linux Permissions (for calling/UAC)
 

@@ -306,6 +306,15 @@ func (w *ModemWorker) Stop() {
 	})
 }
 
+func (w *ModemWorker) IsStopped() bool {
+	select {
+	case <-w.stop:
+		return true
+	default:
+		return false
+	}
+}
+
 func (w *ModemWorker) initModem() {
 	go func() {
 		// Wait for loop start

@@ -1,0 +1,37 @@
+# Build Stage (noUAC / SMS-only)
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+
+WORKDIR /app
+
+ARG TARGETOS
+ARG TARGETARCH
+ARG TARGETVARIANT
+
+RUN apk add --no-cache ca-certificates git
+
+COPY go.mod go.sum ./
+RUN GOTOOLCHAIN=auto go mod download
+
+COPY . .
+
+RUN set -eux; \
+	GOARM=""; \
+	if [ "$TARGETARCH" = "arm" ]; then GOARM="${TARGETVARIANT#v}"; fi; \
+	GOTOOLCHAIN=auto CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} GOARM=${GOARM} \
+		go build -tags nouac -o smsie main.go
+
+# Runtime Stage
+FROM alpine:3.22
+
+WORKDIR /app
+
+RUN apk add --no-cache ca-certificates tzdata
+
+COPY --from=builder /app/smsie .
+COPY --from=builder /app/web ./web
+
+EXPOSE 8080
+VOLUME ["/app/data"]
+
+CMD ["./smsie"]
+

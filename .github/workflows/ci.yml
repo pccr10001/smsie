@@ -258,11 +258,10 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
+          file: Dockerfile.nouac
           context: .
           push: true
           platforms: linux/amd64,linux/arm64,linux/arm/v7
-          build-args: |
-            GO_BUILD_TAGS=nouac
           tags: ${{ steps.image-tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -309,4 +308,3 @@ jobs:
             smsie-windows-amd64.exe \
             smsie-windows-amd64-nouac.exe \
             --clobber
-

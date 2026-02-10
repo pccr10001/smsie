@@ -4,6 +4,7 @@ package calling
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -55,7 +56,7 @@ func NewAudioBridge(cfg AudioConfig, target ModemTarget, logger *log.Logger) (*A
 	inStream, err := portaudio.OpenStream(inParams, inBuf)
 	if err != nil {
 		_ = portaudio.Terminate()
-		return nil, err
+		return nil, fmt.Errorf("open input stream failed (device=%s): %w", device.In.Name, err)
 	}
 
 	outParams := portaudio.HighLatencyParameters(nil, device.Out)
@@ -67,7 +68,7 @@ func NewAudioBridge(cfg AudioConfig, target ModemTarget, logger *log.Logger) (*A
 	if err != nil {
 		_ = inStream.Close()
 		_ = portaudio.Terminate()
-		return nil, err
+		return nil, fmt.Errorf("open output stream failed (device=%s): %w", device.Out.Name, err)
 	}
 
 	b := &AudioBridge{

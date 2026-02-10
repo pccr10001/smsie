@@ -5,6 +5,7 @@ package calling
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/gordonklaus/portaudio"
@@ -70,21 +71,75 @@ func pickUACAudioDevice(cfg AudioConfig, target ModemTarget) (*uacAudioDevice, e
 		return strings.Contains(name, "usb") || strings.Contains(name, "ac interface") || strings.Contains(name, "android")
 	}
 
+	deviceScore := func(name string) int {
+		score := 0
+
+		if hasAnyTargetHint(name) {
+			score += 220
+		}
+		if hasGenericUSBHint(name) {
+			score += 120
+		}
+		if keyword != "" && strings.Contains(name, keyword) {
+			score += 80
+		}
+
+		if strings.Contains(name, "plughw") {
+			score += 50
+		}
+		if strings.Contains(name, "hw:") {
+			score += 40
+		}
+		if strings.Contains(name, "front") {
+			score += 25
+		}
+
+		if strings.Contains(name, "sysdefault") {
+			score -= 40
+		} else if strings.Contains(name, "default") {
+			score -= 20
+		}
+
+		if strings.Contains(name, "surround") ||
+			strings.Contains(name, "rear") ||
+			strings.Contains(name, "center_lfe") ||
+			strings.Contains(name, "side") {
+			score -= 120
+		}
+		if strings.Contains(name, "dmix") {
+			score -= 70
+		}
+		if strings.Contains(name, "iec958") || strings.Contains(name, "hdmi") {
+			score -= 60
+		}
+		if strings.Contains(name, "jack") || strings.Contains(name, "pulse") {
+			score -= 60
+		}
+		if strings.Contains(name, "null") {
+			score -= 200
+		}
+
+		return score
+	}
+
 	findPair := func(filter func(name string) bool) (*portaudio.DeviceInfo, *portaudio.DeviceInfo) {
 		var in, out *portaudio.DeviceInfo
+		bestIn := math.MinInt
+		bestOut := math.MinInt
 		for _, d := range devices {
 			name := normalize(d.Name)
 			if !filter(name) {
 				continue
 			}
-			if in == nil && d.MaxInputChannels > 0 {
+
+			s := deviceScore(name)
+			if d.MaxInputChannels > 0 && s > bestIn {
+				bestIn = s
 				in = d
 			}
-			if out == nil && d.MaxOutputChannels > 0 {
+			if d.MaxOutputChannels > 0 && s > bestOut {
+				bestOut = s
 				out = d
-			}
-			if in != nil && out != nil {
-				break
 			}
 		}
 		return in, out

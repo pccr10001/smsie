@@ -1,5 +1,5 @@
 # Build Stage
-FROM golang:1.24-bullseye AS builder
+FROM golang:1.24.11-bullseye AS builder
 
 WORKDIR /app
 
@@ -12,12 +12,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN GOTOOLCHAIN=auto go mod download
 
 COPY . .
 
 # Build CGO binary for target platform.
-RUN CGO_ENABLED=1 go build -o smsie main.go
+RUN GOTOOLCHAIN=auto CGO_ENABLED=1 go build -o smsie main.go
 
 # Runtime Stage
 FROM debian:bullseye-slim

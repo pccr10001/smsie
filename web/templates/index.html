@@ -479,7 +479,42 @@
               </button>
             </div>
             <hr />
-            <h6>Send SMS</h6>
+            <div class="form-text text-muted">
+              SMS and Call have dedicated buttons on modem cards.
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              data-bs-dismiss="modal"
+            >
+              Close
+            </button>
+            <button type="button" class="btn btn-primary" id="btn-save-modem">
+              Save
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SMS Modal -->
+    <div class="modal fade" id="smsModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">
+              Send SMS: <span id="sms-iccid-title"></span>
+            </h5>
+            <button
+              type="button"
+              class="btn-close"
+              data-bs-dismiss="modal"
+            ></button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" id="sms-iccid" />
             <div class="mb-2">
               <label class="form-label">Phone Number</label>
               <input
@@ -510,9 +545,6 @@
               data-bs-dismiss="modal"
             >
               Close
-            </button>
-            <button type="button" class="btn btn-primary" id="btn-save-modem">
-              Save
             </button>
           </div>
         </div>

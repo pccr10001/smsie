@@ -21,7 +21,8 @@ type ModemHandler struct {
 
 type modemWithWorker struct {
 	model.Modem
-	WorkerExists bool `json:"worker_exists"`
+	WorkerExists  bool `json:"worker_exists"`
+	CallSupported bool `json:"call_supported"`
 }
 
 func NewModemHandler(db *gorm.DB, wm *worker.Manager, callMgr *calling.Manager) *ModemHandler {
@@ -59,10 +60,7 @@ func (h *ModemHandler) ListModems(c *gin.Context) {
 
 	resp := make([]modemWithWorker, 0, len(modems))
 	for _, m := range modems {
-		resp = append(resp, modemWithWorker{
-			Modem:        m,
-			WorkerExists: h.wm.GetWorkerByICCID(m.ICCID) != nil,
-		})
+		resp = append(resp, h.modemWithWorkerState(m))
 	}
 
 	c.JSON(http.StatusOK, resp)
@@ -85,10 +83,22 @@ func (h *ModemHandler) GetModem(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Modem not found"})
 		return
 	}
-	c.JSON(http.StatusOK, modemWithWorker{
-		Modem:        modem,
-		WorkerExists: h.wm.GetWorkerByICCID(modem.ICCID) != nil,
-	})
+	c.JSON(http.StatusOK, h.modemWithWorkerState(modem))
+}
+
+func (h *ModemHandler) modemWithWorkerState(modem model.Modem) modemWithWorker {
+	w := h.wm.GetWorkerByICCID(modem.ICCID)
+	workerExists := w != nil
+	callSupported := false
+	if w != nil {
+		callSupported = w.IsUACReady()
+	}
+
+	return modemWithWorker{
+		Modem:         modem,
+		WorkerExists:  workerExists,
+		CallSupported: callSupported,
+	}
 }
 
 func (h *ModemHandler) UpdateModem(c *gin.Context) {

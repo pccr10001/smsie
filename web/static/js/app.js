@@ -531,6 +531,13 @@ function loadModems() {
                 const statusClass = m.status === 'online' ? 'online' : 'offline';
                 const workerExists = !(Object.prototype.hasOwnProperty.call(m, 'worker_exists')) || !!m.worker_exists;
                 const statusText = workerExists ? (m.status || 'offline') : 'Not Exists';
+                const callSupported = !!m.call_supported;
+                const actionButtons = auth.role === 'admin'
+                    ? `<button class="btn btn-sm btn-outline-secondary w-100 mt-2" onclick="manageWebhooks('${m.iccid}')">${window.t('webhooks') || 'Webhooks'}</button>
+                                 <button class="btn btn-sm btn-outline-success w-100 mt-1" onclick="showSMSModal('${m.iccid}')">SMS</button>
+                                 ${callSupported ? `<button class="btn btn-sm btn-outline-success w-100 mt-1" onclick="showCallModal('${m.iccid}')">Call</button>` : ''}
+                                 <button class="btn btn-sm btn-outline-primary w-100 mt-1" onclick="showModemSettings('${m.iccid}')">${window.t('settings') || 'Settings'}</button>`
+                    : '';
                 list.append(`
                     <div class="col-md-4 mb-3">
                         <div class="card p-3">
@@ -542,11 +549,7 @@ function loadModems() {
                             <p class="mb-1"><strong>${window.t('registration')}:</strong> ${m.registration || 'Unknown'}</p>
                             <p class="mb-2"><strong>${window.t('signal')}:</strong> ${m.signal_strength > 0 ? m.signal_strength : 'Unknown'}</p>
                             <p class="text-muted small">Port: ${m.port_name}</p>
-                            ${auth.role === 'admin' ?
-                        `<button class="btn btn-sm btn-outline-secondary w-100 mt-2" onclick="manageWebhooks('${m.iccid}')">${window.t('webhooks') || 'Webhooks'}</button>
-                                 <button class="btn btn-sm btn-outline-success w-100 mt-1" onclick="showCallModal('${m.iccid}')">Call</button>
-                                 <button class="btn btn-sm btn-outline-primary w-100 mt-1" onclick="showModemSettings('${m.iccid}')">${window.t('settings') || 'Settings'}</button>`
-                        : ''}
+                            ${actionButtons}
                         </div>
                     </div>
                 `);
@@ -716,10 +719,6 @@ window.showModemSettings = function (iccid) {
     $('#scan-results').empty();
     $('#at-log').val("");
     $('#at-input').val("");
-    // Clear SMS form
-    $('#sms-phone').val("");
-    $('#sms-content').val("");
-    $('#sms-send-status').empty();
     $('#modem-status').text('');
 
     // Fetch current details
@@ -731,6 +730,15 @@ window.showModemSettings = function (iccid) {
     });
 
     $('#modemModal').modal('show');
+}
+
+window.showSMSModal = function (iccid) {
+    $('#sms-iccid-title').text(iccid);
+    $('#sms-iccid').val(iccid);
+    $('#sms-phone').val('');
+    $('#sms-content').val('');
+    $('#sms-send-status').empty();
+    $('#smsModal').modal('show');
 }
 
 $('#modemModal').on('hidden.bs.modal', function () {
@@ -922,7 +930,7 @@ $(document).on('click', '#btn-reboot-modem', function () {
 
 // Send SMS Handler
 $('#btn-send-sms').click(function () {
-    const iccid = $('#m-iccid').val();
+    const iccid = $('#sms-iccid').val();
     const phone = $('#sms-phone').val().trim();
     const message = $('#sms-content').val().trim();
     const statusDiv = $('#sms-send-status');

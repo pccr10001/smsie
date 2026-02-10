@@ -411,59 +411,44 @@ func (w *ModemWorker) initModem() {
 			}
 		}
 
-		// 6. Get Operator
-		var operator string
-		resp, err = w.ExecuteAT("AT+COPS?", 2*time.Second)
+		// 6. Get Registration Status (source of truth)
+		var regStatus string
+		var regCode string
+		resp, err = w.ExecuteAT("AT+CREG?", 2*time.Second)
 		if err == nil {
-			// +COPS: 0,0,"Chunghwa Telecom",7
-			// Parse content inside quotes
-			if strings.Contains(resp, "\"") {
-				splitted := strings.Split(resp, "\"")
-				if len(splitted) >= 2 {
-					op := splitted[1]
-					// Check if numeric (MCCMNC)
-					// If numeric string length is 5 or 6, try to resolve
-					isNumeric := true
-					for _, c := range op {
-						if c < '0' || c > '9' {
-							isNumeric = false
-							break
-						}
-					}
-
-					if isNumeric && (len(op) == 5 || len(op) == 6) {
-						modemName := mccmnc.GetOperatorName(op[:3], op[3:])
-						if modemName != "" {
-							op = modemName
-						}
-					}
-					operator = op
-				}
+			if code, text, perr := parseCREGStatus(resp); perr == nil {
+				regCode = code
+				regStatus = text
+			} else {
+				regStatus = "Unknown"
 			}
 		}
 
-		// 7. Get Registration Status
-		var regStatus string
-		resp, err = w.ExecuteAT("AT+CREG?", 2*time.Second)
-		if err == nil {
-			// +CREG: 0,1
-			// Status: 0=Not reg, 1=Home, 2=Search, 3=Denied, 4=Unknown, 5=Roaming
-			parts := strings.Split(parseID(resp, "+CREG:"), ",")
-			if len(parts) >= 2 {
-				stat := strings.TrimSpace(parts[1])
-				switch stat {
-				case "1":
-					regStatus = "Home Network"
-				case "5":
-					regStatus = "Roaming"
-				case "2":
-					regStatus = "Searching..."
-				case "3":
-					regStatus = "Denied"
-				case "4":
-					regStatus = "Unknown"
-				default:
-					regStatus = "Not Registered"
+		// 7. Get Operator only when registered (home/roaming)
+		var operator string
+		if regCode == "1" || regCode == "5" {
+			resp, err = w.ExecuteAT("AT+COPS?", 2*time.Second)
+			if err == nil {
+				if strings.Contains(resp, "\"") {
+					splitted := strings.Split(resp, "\"")
+					if len(splitted) >= 2 {
+						op := splitted[1]
+						isNumeric := true
+						for _, c := range op {
+							if c < '0' || c > '9' {
+								isNumeric = false
+								break
+							}
+						}
+
+						if isNumeric && (len(op) == 5 || len(op) == 6) {
+							modemName := mccmnc.GetOperatorName(op[:3], op[3:])
+							if modemName != "" {
+								op = modemName
+							}
+						}
+						operator = op
+					}
 				}
 			}
 		}
@@ -564,6 +549,22 @@ func (w *ModemWorker) handleURC(line string) {
 			// Already triggered
 		}
 		return
+	}
+
+	if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(line)), "+CREG:") {
+		if code, text, err := parseCREGStatus(line); err == nil {
+			if w.modem == nil {
+				logger.Log.Debugf("[%s] Ignore CREG URC before modem init: %s", w.PortName, line)
+			} else {
+				w.modem.Registration = text
+				if code != "1" && code != "5" {
+					w.modem.Operator = ""
+				}
+				if upsertErr := w.repo.Upsert(w.modem); upsertErr != nil {
+					logger.Log.Warnf("[%s] Failed to upsert modem after CREG URC: %v", w.PortName, upsertErr)
+				}
+			}
+		}
 	}
 
 	if w.shouldHandleCallURC(line) {

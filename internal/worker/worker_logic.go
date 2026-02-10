@@ -83,8 +83,13 @@ func (w *ModemWorker) checkOperator() {
 }
 
 func (w *ModemWorker) checkSignal() {
-	// Update Operator info as well since we are here
-	w.checkOperator()
+	// Registration drives whether operator should be shown.
+	regCode := w.checkRegistration()
+	if regCode == "1" || regCode == "5" {
+		w.checkOperator()
+	} else if regCode != "" {
+		w.modem.Operator = ""
+	}
 
 	resp, err := w.ExecuteAT("AT+CSQ", 2*time.Second)
 	if err != nil {
@@ -114,6 +119,60 @@ func (w *ModemWorker) checkSignal() {
 				w.repo.Upsert(w.modem)
 			}
 		}
+	}
+}
+
+func (w *ModemWorker) checkRegistration() string {
+	resp, err := w.ExecuteAT("AT+CREG?", 2*time.Second)
+	if err != nil {
+		logger.Log.Errorf("[%s] Failed CREG: %v", w.PortName, err)
+		return ""
+	}
+
+	code, text, err := parseCREGStatus(resp)
+	if err != nil {
+		logger.Log.Warnf("[%s] Failed to parse CREG response: %v", w.PortName, err)
+		return ""
+	}
+
+	w.modem.Registration = text
+	return code
+}
+
+func parseCREGStatus(resp string) (string, string, error) {
+	body := strings.TrimSpace(parseID(resp, "+CREG:"))
+	if body == "" {
+		return "", "", fmt.Errorf("missing +CREG response")
+	}
+
+	parts := strings.Split(body, ",")
+	if len(parts) == 0 {
+		return "", "", fmt.Errorf("invalid +CREG response")
+	}
+
+	// +CREG: <n>,<stat>[,...]
+	// Fallback for malformed payloads where only <stat> is present.
+	stat := strings.TrimSpace(parts[0])
+	if len(parts) >= 2 {
+		stat = strings.TrimSpace(parts[1])
+	}
+	stat = strings.Trim(stat, `"`)
+
+	switch stat {
+	case "1":
+		return stat, "Home Network", nil
+	case "5":
+		return stat, "Roaming", nil
+	case "2":
+		return stat, "Searching...", nil
+	case "3":
+		return stat, "Denied", nil
+	case "4":
+		return stat, "Unknown", nil
+	case "0":
+		return stat, "Not Registered", nil
+	default:
+		return stat, "Unknown", nil
 	}
 }
 

@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -25,18 +26,27 @@ func handleModemWS(c *gin.Context, callMgr *calling.Manager, iccid string, targe
 	}
 	defer conn.Close()
 
+	var writeMu sync.Mutex
+	writeJSON := func(msg calling.SignalMessage) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		return conn.WriteJSON(msg)
+	}
+
 	session, err := callMgr.EnsureSession(iccid, target)
 	if err != nil {
-		_ = conn.WriteJSON(calling.SignalMessage{Type: "error", Text: err.Error()})
+		_ = writeJSON(calling.SignalMessage{Type: "error", Text: err.Error()})
 		return
 	}
 	if session == nil || session.Peer == nil {
-		_ = conn.WriteJSON(calling.SignalMessage{Type: "error", Text: "invalid calling session"})
+		_ = writeJSON(calling.SignalMessage{Type: "error", Text: "invalid calling session"})
 		return
 	}
 	peer := session.Peer
 
 	pc := peer.PeerConnection()
+	defer pc.OnICECandidate(nil)
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
 			_ = callMgr.CloseSession(iccid)
@@ -48,12 +58,12 @@ func handleModemWS(c *gin.Context, callMgr *calling.Manager, iccid string, targe
 			return
 		}
 		msg := calling.SignalMessage{Type: "candidate", Candidate: ptrICE(candidate.ToJSON())}
-		if err := conn.WriteJSON(msg); err != nil {
+		if err := writeJSON(msg); err != nil {
 			logger.Log.Warnf("write candidate failed: %v", err)
 		}
 	})
 
-	_ = conn.WriteJSON(calling.SignalMessage{Type: "ready", Text: "server ready"})
+	_ = writeJSON(calling.SignalMessage{Type: "ready", Text: "server ready"})
 
 	for {
 		_, raw, err := conn.ReadMessage()
@@ -63,44 +73,44 @@ func handleModemWS(c *gin.Context, callMgr *calling.Manager, iccid string, targe
 
 		msg, err := calling.ParseSignalMessage(raw)
 		if err != nil {
-			_ = conn.WriteJSON(calling.SignalMessage{Type: "error", Text: err.Error()})
+			_ = writeJSON(calling.SignalMessage{Type: "error", Text: err.Error()})
 			continue
 		}
 
 		switch msg.Type {
 		case "offer":
 			if msg.Offer == nil {
-				_ = conn.WriteJSON(calling.SignalMessage{Type: "error", Text: "offer is required"})
+				_ = writeJSON(calling.SignalMessage{Type: "error", Text: "offer is required"})
 				continue
 			}
 			if err := pc.SetRemoteDescription(*msg.Offer); err != nil {
-				_ = conn.WriteJSON(calling.SignalMessage{Type: "error", Text: err.Error()})
+				_ = writeJSON(calling.SignalMessage{Type: "error", Text: err.Error()})
 				continue
 			}
 			answer, err := pc.CreateAnswer(nil)
 			if err != nil {
-				_ = conn.WriteJSON(calling.SignalMessage{Type: "error", Text: err.Error()})
+				_ = writeJSON(calling.SignalMessage{Type: "error", Text: err.Error()})
 				continue
 			}
 			if err := pc.SetLocalDescription(answer); err != nil {
-				_ = conn.WriteJSON(calling.SignalMessage{Type: "error", Text: err.Error()})
+				_ = writeJSON(calling.SignalMessage{Type: "error", Text: err.Error()})
 				continue
 			}
 			localDesc, err := calling.WaitForLocalDescription(pc, 10*time.Second)
 			if err != nil {
-				_ = conn.WriteJSON(calling.SignalMessage{Type: "error", Text: err.Error()})
+				_ = writeJSON(calling.SignalMessage{Type: "error", Text: err.Error()})
 				continue
 			}
-			_ = conn.WriteJSON(calling.SignalMessage{Type: "answer", Answer: localDesc})
+			_ = writeJSON(calling.SignalMessage{Type: "answer", Answer: localDesc})
 		case "candidate":
 			if msg.Candidate == nil {
 				continue
 			}
 			if err := pc.AddICECandidate(*msg.Candidate); err != nil {
-				_ = conn.WriteJSON(calling.SignalMessage{Type: "error", Text: err.Error()})
+				_ = writeJSON(calling.SignalMessage{Type: "error", Text: err.Error()})
 			}
 		default:
-			_ = conn.WriteJSON(calling.SignalMessage{Type: "error", Text: "unsupported signal type"})
+			_ = writeJSON(calling.SignalMessage{Type: "error", Text: "unsupported signal type"})
 		}
 	}
 }

@@ -1,11 +1,16 @@
 module github.com/pccr10001/smsie
 
-go 1.24.11
+go 1.25
 
 require (
 	github.com/gin-gonic/gin v1.11.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/google/gousb v1.1.3
+	github.com/gordonklaus/portaudio v0.0.0-20260203164431-765aa7dfa631
+	github.com/gorilla/websocket v1.5.3
+	github.com/pion/rtp v1.10.1
+	github.com/pion/webrtc/v4 v4.2.3
 	github.com/spf13/viper v1.21.0
 	github.com/warthog618/sms v0.3.0
 	go.bug.st/serial v1.6.4
@@ -33,10 +38,7 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/goccy/go-json v0.10.2 // indirect
 	github.com/goccy/go-yaml v1.18.0 // indirect
-	github.com/google/gousb v1.1.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/gordonklaus/portaudio v0.0.0-20260203164431-765aa7dfa631 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -54,14 +56,12 @@ require (
 	github.com/pion/mdns/v2 v2.1.0 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/rtcp v1.2.16 // indirect
-	github.com/pion/rtp v1.10.1 // indirect
 	github.com/pion/sctp v1.9.2 // indirect
 	github.com/pion/sdp/v3 v3.0.17 // indirect
 	github.com/pion/srtp/v3 v3.0.10 // indirect
 	github.com/pion/stun/v3 v3.1.1 // indirect
 	github.com/pion/transport/v4 v4.0.1 // indirect
 	github.com/pion/turn/v4 v4.1.4 // indirect
-	github.com/pion/webrtc/v4 v4.2.3 // indirect
 	github.com/quic-go/qpack v0.5.1 // indirect
 	github.com/quic-go/quic-go v0.54.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect

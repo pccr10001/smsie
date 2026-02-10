@@ -14,7 +14,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24.11"
+          go-version: "1.25"
           cache: true
 
       - name: Install dependencies
@@ -47,7 +47,7 @@ jobs:
           docker run --rm --platform linux/arm64/v8 \
             -v "${{ github.workspace }}:/src" \
             -w /src \
-            golang:1.24.11-bullseye \
+            golang:1.25-bookworm \
             bash -lc 'export PATH=/usr/local/go/bin:$PATH && export GOTOOLCHAIN=auto && apt-get update && apt-get install -y --no-install-recommends portaudio19-dev libusb-1.0-0-dev ffmpeg pkg-config && CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -v -o smsie-linux-arm64 main.go'
 
       - name: Upload Artifacts
@@ -71,7 +71,7 @@ jobs:
           docker run --rm --platform linux/arm/v7 \
             -v "${{ github.workspace }}:/src" \
             -w /src \
-            golang:1.24.11-bullseye \
+            golang:1.25-bookworm \
             bash -lc 'export PATH=/usr/local/go/bin:$PATH && export GOTOOLCHAIN=auto && apt-get update && apt-get install -y --no-install-recommends portaudio19-dev libusb-1.0-0-dev ffmpeg pkg-config && CGO_ENABLED=1 GOOS=linux GOARCH=arm GOARM=7 go build -v -o smsie-linux-arm main.go'
 
       - name: Upload Artifacts
@@ -90,7 +90,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24.11"
+          go-version: "1.25"
           cache: true
 
       - name: Set up MSYS2 (MinGW64)

@@ -1,5 +1,5 @@
 # Build Stage
-FROM golang:1.24.11-bullseye AS builder
+FROM golang:1.25-bookworm AS builder
 
 WORKDIR /app
 
@@ -20,7 +20,7 @@ COPY . .
 RUN GOTOOLCHAIN=auto CGO_ENABLED=1 go build -o smsie main.go
 
 # Runtime Stage
-FROM debian:bullseye-slim
+FROM debian:bookworm-slim
 
 WORKDIR /app
 

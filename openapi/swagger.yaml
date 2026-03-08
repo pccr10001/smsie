@@ -44,6 +44,27 @@ components:
           type: string
         imei:
           type: string
+        sip_enabled:
+          type: boolean
+        sip_username:
+          type: string
+        sip_proxy:
+          type: string
+        sip_port:
+          type: integer
+        sip_domain:
+          type: string
+        sip_transport:
+          type: string
+          enum: [udp, tcp, tls]
+        sip_register:
+          type: boolean
+        sip_tls_skip_verify:
+          type: boolean
+        sip_listen_port:
+          type: integer
+        sip_has_password:
+          type: boolean
         operator:
           type: string
         signal_strength:
@@ -56,6 +77,25 @@ components:
         registration:
           type: string
         last_seen:
+          type: string
+          format: date-time
+        worker_exists:
+          type: boolean
+        call_supported:
+          type: boolean
+        sip_available:
+          type: boolean
+        sip_listener_active:
+          type: boolean
+        sip_listener_transport:
+          type: string
+        sip_line_id:
+          type: string
+        sip_register_state:
+          type: string
+        sip_register_reason:
+          type: string
+        sip_register_updated_at:
           type: string
           format: date-time
 
@@ -187,7 +227,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Modem"
     put:
-      summary: Update modem details (e.g. Name)
+      summary: Update modem details and SIP client settings
       parameters:
         - name: iccid
           in: path
@@ -202,6 +242,28 @@ paths:
               properties:
                 name:
                   type: string
+                sip_enabled:
+                  type: boolean
+                sip_username:
+                  type: string
+                sip_password:
+                  type: string
+                  description: Leave blank to keep the current password
+                sip_proxy:
+                  type: string
+                sip_port:
+                  type: integer
+                sip_domain:
+                  type: string
+                sip_transport:
+                  type: string
+                  enum: [udp, tcp, tls]
+                sip_register:
+                  type: boolean
+                sip_tls_skip_verify:
+                  type: boolean
+                sip_listen_port:
+                  type: integer
       responses:
         "200":
           description: Updated modem
@@ -209,6 +271,27 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Modem"
+    delete:
+      summary: Delete modem profile by ICCID (Admin only)
+      parameters:
+        - name: iccid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Modem deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: deleted
+                  iccid:
+                    type: string
 
   /modems/{iccid}/scan:
     post:
@@ -321,6 +404,162 @@ paths:
                 properties:
                   response:
                     type: string
+
+  /modems/{iccid}/call/state:
+    get:
+      summary: Get call state
+      parameters:
+        - name: iccid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Current call state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  state:
+                    type: string
+                  reason:
+                    type: string
+                  updated_at:
+                    type: string
+                    format: date-time
+                  uac_ready:
+                    type: boolean
+                  uac_vid:
+                    type: string
+                  uac_pid:
+                    type: string
+                  call_mode:
+                    type: string
+                    enum: [modem, sip]
+                  sip_available:
+                    type: boolean
+                  sip_listener_transport:
+                    type: string
+                  sip_listen_port:
+                    type: integer
+                  sip_state:
+                    type: object
+                    properties:
+                      state:
+                        type: string
+                      reason:
+                        type: string
+                      updated_at:
+                        type: string
+                        format: date-time
+                      active:
+                        type: boolean
+                      register_state:
+                        type: string
+                      register_reason:
+                        type: string
+                      register_updated_at:
+                        type: string
+                        format: date-time
+
+  /modems/{iccid}/call/dial:
+    post:
+      summary: Dial a number
+      description: Browser frontend uses WebRTC signaling plus modem/UAC audio and sends only `number`. Optional `via: sip` is reserved for backend/API integrations that intentionally route over the modem's SIP external line.
+      parameters:
+        - name: iccid
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [number]
+              properties:
+                number:
+                  type: string
+                via:
+                  type: string
+                  enum: [modem, sip]
+                  default: modem
+                  description: Optional integration override. Browser UI always uses modem/WebRTC. Use `sip` only for backend/API control of the modem's SIP external line.
+      responses:
+        "200":
+          description: Dial command accepted
+
+  /modems/{iccid}/call/hangup:
+    post:
+      summary: Hangup current call
+      description: Browser UI omits `via` and lets the server auto-select the active call leg. `via` remains available for explicit backend/API integrations.
+      parameters:
+        - name: iccid
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                via:
+                  type: string
+                  enum: [modem, sip]
+                  description: Optional integration override. If omitted, server auto-selects the active call leg.
+      responses:
+        "200":
+          description: Hangup command accepted
+
+  /modems/{iccid}/call/dtmf:
+    post:
+      summary: Send in-call DTMF tone
+      description: Browser UI omits `via` and lets the server auto-select the active call leg. `via` remains available for explicit backend/API integrations.
+      parameters:
+        - name: iccid
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tone]
+              properties:
+                tone:
+                  type: string
+                  description: one of 0-9,*,#
+                  example: "5"
+                via:
+                  type: string
+                  enum: [modem, sip]
+                  description: Optional integration override. If omitted, server auto-selects the active call leg.
+      responses:
+        "200":
+          description: DTMF sent
+
+  /modems/{iccid}/ws:
+    get:
+      summary: WebRTC signaling websocket endpoint
+      description: Upgrade to WebSocket and exchange SDP/ICE signaling messages.
+      parameters:
+        - name: iccid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "101":
+          description: Switching Protocols
 
   /sms:
     get:

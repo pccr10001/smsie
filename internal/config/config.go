@@ -42,6 +42,7 @@ type CallingConfig struct {
 	UDPPortMin  uint16      `mapstructure:"udp_port_min"`
 	UDPPortMax  uint16      `mapstructure:"udp_port_max"`
 	Audio       AudioConfig `mapstructure:"audio"`
+	SIP         SIPConfig   `mapstructure:"sip"`
 }
 
 type AudioConfig struct {
@@ -52,6 +53,18 @@ type AudioConfig struct {
 	BitsPerSample    int    `mapstructure:"bits_per_sample"`
 	CaptureChunkMs   int    `mapstructure:"capture_chunk_ms"`
 	PlaybackChunkMs  int    `mapstructure:"playback_chunk_ms"`
+}
+
+type SIPConfig struct {
+	RegisterExpires    int    `mapstructure:"register_expires"`
+	LocalHost          string `mapstructure:"local_host"`
+	LocalPort          int    `mapstructure:"local_port"`
+	RTPBindIP          string `mapstructure:"rtp_bind_ip"`
+	RTPPortMin         int    `mapstructure:"rtp_port_min"`
+	RTPPortMax         int    `mapstructure:"rtp_port_max"`
+	InviteTimeoutSec   int    `mapstructure:"invite_timeout_sec"`
+	DTMFMethod         string `mapstructure:"dtmf_method"`
+	DTMFDurationMillis int    `mapstructure:"dtmf_duration_ms"`
 }
 
 type WebhookConfig struct {
@@ -102,6 +115,27 @@ func LoadConfig() {
 	}
 	if AppConfig.Calling.Audio.PlaybackChunkMs <= 0 {
 		AppConfig.Calling.Audio.PlaybackChunkMs = 100
+	}
+	if AppConfig.Calling.SIP.LocalPort <= 0 {
+		AppConfig.Calling.SIP.LocalPort = 5060
+	}
+	if AppConfig.Calling.SIP.RegisterExpires <= 0 {
+		AppConfig.Calling.SIP.RegisterExpires = 300
+	}
+	if AppConfig.Calling.SIP.RTPPortMin <= 0 {
+		AppConfig.Calling.SIP.RTPPortMin = 30000
+	}
+	if AppConfig.Calling.SIP.RTPPortMax < AppConfig.Calling.SIP.RTPPortMin {
+		AppConfig.Calling.SIP.RTPPortMax = AppConfig.Calling.SIP.RTPPortMin
+	}
+	if AppConfig.Calling.SIP.InviteTimeoutSec <= 0 {
+		AppConfig.Calling.SIP.InviteTimeoutSec = 30
+	}
+	if AppConfig.Calling.SIP.DTMFMethod == "" {
+		AppConfig.Calling.SIP.DTMFMethod = "info"
+	}
+	if AppConfig.Calling.SIP.DTMFDurationMillis <= 0 {
+		AppConfig.Calling.SIP.DTMFDurationMillis = 160
 	}
 
 	log.Println("Configuration loaded successfully")

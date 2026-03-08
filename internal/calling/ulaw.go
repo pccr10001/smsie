@@ -31,6 +31,14 @@ func decodeALaw(data []byte) []int16 {
 	return out
 }
 
+func encodeALaw(pcm []int16) []byte {
+	out := make([]byte, len(pcm))
+	for i, sample := range pcm {
+		out[i] = linearToALaw(sample)
+	}
+	return out
+}
+
 func linearToULaw(sample int16) byte {
 	s := int(sample)
 	sign := 0
@@ -97,4 +105,32 @@ func aLawToLinear(sample byte) int16 {
 		value = -32768
 	}
 	return int16(value)
+}
+
+func linearToALaw(sample int16) byte {
+	s := int(sample)
+	sign := byte(0x00)
+	if s < 0 {
+		sign = 0x80
+		s = -s
+	}
+	if s > 32767 {
+		s = 32767
+	}
+
+	var exponent int
+	var mantissa int
+	if s >= 256 {
+		exponent = 1
+		for v := s >> 8; v > 1 && exponent < 7; v >>= 1 {
+			exponent++
+		}
+		mantissa = (s >> (exponent + 3)) & 0x0F
+	} else {
+		exponent = 0
+		mantissa = s >> 4
+	}
+
+	alaw := sign | byte(exponent<<4) | byte(mantissa&0x0F)
+	return alaw ^ 0x55
 }

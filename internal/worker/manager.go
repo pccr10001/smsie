@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/pccr10001/smsie/internal/config"
-	"github.com/pccr10001/smsie/internal/model"
 	"github.com/pccr10001/smsie/pkg/logger"
 	"go.bug.st/serial"
 	"gorm.io/gorm"
@@ -130,15 +129,24 @@ func (m *Manager) unregisterWorkerLocked(port string, w *ModemWorker) {
 
 	if w.modem != nil && w.modem.ICCID != "" {
 		delete(m.activeICCIDs, w.modem.ICCID)
-		w.modem.Status = "offline"
-		w.modem.LastSeen = time.Now()
-		_ = m.db.Model(&model.Modem{}).
-			Where("iccid = ?", w.modem.ICCID).
-			Updates(map[string]interface{}{
-				"status":    "offline",
-				"last_seen": w.modem.LastSeen,
-			}).Error
 	}
+}
+
+func (m *Manager) RemoveWorkerByICCID(iccid string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for port, w := range m.workers {
+		if w == nil || w.modem == nil || w.modem.ICCID != iccid {
+			continue
+		}
+		w.Stop()
+		m.unregisterWorkerLocked(port, w)
+		return true
+	}
+
+	delete(m.activeICCIDs, iccid)
+	return false
 }
 
 func isExcluded(port string) bool {

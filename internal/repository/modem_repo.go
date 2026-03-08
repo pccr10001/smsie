@@ -17,7 +17,7 @@ func NewModemRepository(db *gorm.DB) *ModemRepository {
 func (r *ModemRepository) Upsert(modem *model.Modem) error {
 	return r.db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "iccid"}},
-		DoUpdates: clause.AssignmentColumns([]string{"imei", "port_name", "status", "signal_strength", "operator", "registration", "last_seen"}),
+		DoUpdates: clause.AssignmentColumns([]string{"imei", "port_name"}),
 	}).Create(modem).Error
 }
 
@@ -28,5 +28,5 @@ func (r *ModemRepository) FindByICCID(iccid string) (*model.Modem, error) {
 }
 
 func (r *ModemRepository) MarkAllOffline() {
-	r.db.Model(&model.Modem{}).Update("status", "offline")
+	// Runtime status is in-memory and should not be persisted.
 }

@@ -477,7 +477,13 @@ func (w *ModemWorker) initModem() {
 			LastSeen:       time.Now(),
 		}
 
-		if err := w.repo.Upsert(modem); err != nil {
+		persist := &model.Modem{
+			ICCID:    iccid,
+			IMEI:     imei,
+			PortName: w.PortName,
+		}
+
+		if err := w.repo.Upsert(persist); err != nil {
 			logger.Log.Errorf("Failed to save modem %s: %v", iccid, err)
 		} else {
 			w.modem = modem
@@ -572,9 +578,7 @@ func (w *ModemWorker) handleURC(line string) {
 				if code != "1" && code != "5" {
 					w.modem.Operator = ""
 				}
-				if upsertErr := w.repo.Upsert(w.modem); upsertErr != nil {
-					logger.Log.Warnf("[%s] Failed to upsert modem after CREG URC: %v", w.PortName, upsertErr)
-				}
+				w.modem.LastSeen = time.Now()
 			}
 		}
 	}

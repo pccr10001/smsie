@@ -116,7 +116,7 @@ func (w *ModemWorker) checkSignal() {
 				}
 
 				w.modem.SignalStrength = signal
-				w.repo.Upsert(w.modem)
+				w.modem.LastSeen = time.Now()
 			}
 		}
 	}

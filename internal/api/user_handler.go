@@ -3,11 +3,11 @@ package api
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pccr10001/smsie/internal/auth"
 	"github.com/pccr10001/smsie/internal/model"
-	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
@@ -19,15 +19,21 @@ func NewUserHandler(db *gorm.DB) *UserHandler {
 	return &UserHandler{db: db}
 }
 
+type permissionInput struct {
+	ICCID       string `json:"iccid"`
+	CanMakeCall bool   `json:"can_make_call"`
+	CanViewSMS  bool   `json:"can_view_sms"`
+	CanSendSMS  bool   `json:"can_send_sms"`
+	CanSendAT   bool   `json:"can_send_at"`
+}
+
 // Use bcrypt for secure hashing
 func hashPassword(password string) (string, error) {
-	bytes, err := bcrypt.GenerateFromPassword([]byte(password), 14)
-	return string(bytes), err
+	return hashPasswordStrict(password)
 }
 
 func checkPasswordHash(password, hash string) bool {
-	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
-	return err == nil
+	return checkPasswordStrict(password, hash)
 }
 
 func (h *UserHandler) Login(c *gin.Context) {
@@ -86,10 +92,11 @@ func (h *UserHandler) ListUsers(c *gin.Context) {
 
 func (h *UserHandler) CreateUser(c *gin.Context) {
 	var req struct {
-		Username      string `json:"username"`
-		Password      string `json:"password"`
-		Role          string `json:"role"`
-		AllowedModems string `json:"allowed_modems"`
+		Username      string            `json:"username"`
+		Password      string            `json:"password"`
+		Role          string            `json:"role"`
+		AllowedModems string            `json:"allowed_modems"`
+		Permissions   []permissionInput `json:"permissions"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -112,7 +119,121 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	if err := h.replaceUserPermissions(user.ID, req.AllowedModems, req.Permissions); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save permissions: " + err.Error()})
+		return
+	}
+
 	c.JSON(http.StatusOK, user)
+}
+
+func (h *UserHandler) UpdateUserPermissions(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user id"})
+		return
+	}
+
+	var user model.User
+	if err := h.db.First(&user, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+
+	if user.Role == "admin" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "admin permissions are always full"})
+		return
+	}
+
+	var req struct {
+		AllowedModems string            `json:"allowed_modems"`
+		Permissions   []permissionInput `json:"permissions"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	user.AllowedModems = req.AllowedModems
+	if err := h.db.Save(&user).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := h.replaceUserPermissions(user.ID, req.AllowedModems, req.Permissions); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save permissions: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func (h *UserHandler) ListUserPermissions(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user id"})
+		return
+	}
+
+	var user model.User
+	if err := h.db.First(&user, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+
+	var perms []model.UserModemPermission
+	if err := h.db.Where("user_id = ?", user.ID).Order("iccid asc").Find(&perms).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"user_id":        user.ID,
+		"username":       user.Username,
+		"allowed_modems": user.AllowedModems,
+		"permissions":    perms,
+	})
+}
+
+func (h *UserHandler) replaceUserPermissions(userID uint, allowedModems string, inputs []permissionInput) error {
+	allowedSet := map[string]struct{}{}
+	for _, iccid := range splitAndTrimAllowed(allowedModems) {
+		allowedSet[iccid] = struct{}{}
+	}
+	_, hasWildcard := allowedSet["*"]
+
+	if err := h.db.Where("user_id = ?", userID).Delete(&model.UserModemPermission{}).Error; err != nil {
+		return err
+	}
+
+	for _, item := range inputs {
+		iccid := strings.TrimSpace(item.ICCID)
+		if iccid == "" {
+			continue
+		}
+		if !hasWildcard {
+			if _, ok := allowedSet[iccid]; !ok {
+				continue
+			}
+		}
+
+		rec := model.UserModemPermission{
+			UserID:      userID,
+			ICCID:       iccid,
+			CanMakeCall: item.CanMakeCall,
+			CanViewSMS:  item.CanViewSMS,
+			CanSendSMS:  item.CanSendSMS,
+			CanSendAT:   item.CanSendAT,
+		}
+		if err := h.db.Create(&rec).Error; err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (h *UserHandler) DeleteUser(c *gin.Context) {

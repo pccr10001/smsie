@@ -17,6 +17,7 @@ type Config struct {
 	UDPPortMin  uint16
 	UDPPortMax  uint16
 	Audio       AudioConfig
+	SIP         SIPConfig
 }
 
 type AudioConfig struct {
@@ -27,6 +28,48 @@ type AudioConfig struct {
 	BitsPerSample    int
 	CaptureChunkMs   int
 	PlaybackChunkMs  int
+}
+
+type SIPConfig struct {
+	Enabled            bool
+	ModemICCID         string
+	ModemICCIDs        []string
+	Username           string
+	Password           string
+	Proxy              string
+	Port               int
+	Domain             string
+	Transport          string
+	TLSSkipVerify      bool
+	Register           bool
+	RegisterExpires    int
+	LocalHost          string
+	LocalPort          int
+	RTPBindIP          string
+	RTPPortMin         int
+	RTPPortMax         int
+	InviteTimeoutSec   int
+	DTMFMethod         string
+	DTMFDurationMillis int
+}
+
+type SIPInboundHooks struct {
+	ICCID        string
+	ResolveModem func() (iccid string, target ModemTarget, err error)
+	DialModem    func(iccid, number string) error
+	HangupModem  func(iccid string) error
+	SendDTMF     func(iccid, tone string) error
+}
+
+type SIPInboundLineInfo struct {
+	LineID         string
+	ICCID          string
+	LocalPort      int
+	Transport      string
+	Active         bool
+	RegisterState  string
+	RegisterReason string
+	UpdatedAt      time.Time
 }
 
 func (a AudioConfig) CaptureSamples() int {
@@ -203,4 +246,91 @@ func (m *Manager) RequireConnected(iccid string) error {
 	_ = m
 	_ = iccid
 	return errUACDisabled
+}
+
+func (m *Manager) SIPEnabled() bool {
+	_ = m
+	return false
+}
+
+func (m *Manager) SIPTransport() string {
+	_ = m
+	return ""
+}
+
+func (m *Manager) SIPCallState(iccid string) (state, reason string, updatedAt time.Time, ok bool) {
+	_ = m
+	_ = iccid
+	return "", "", time.Time{}, false
+}
+
+func (m *Manager) SIPInboundLineInfo(iccid string) (SIPInboundLineInfo, bool) {
+	_ = m
+	_ = iccid
+	return SIPInboundLineInfo{}, false
+}
+
+func (m *Manager) StartSIPInbound(lineID string, localPort int, hooks SIPInboundHooks) error {
+	_ = m
+	_ = lineID
+	_ = localPort
+	_ = hooks
+	return errUACDisabled
+}
+
+func (m *Manager) StopSIPInbound() error {
+	_ = m
+	return nil
+}
+
+func (m *Manager) SyncSIPInbound(lineID string, cfg SIPConfig, hooks SIPInboundHooks) error {
+	_ = m
+	_ = lineID
+	_ = cfg
+	_ = hooks
+	return errUACDisabled
+}
+
+func (m *Manager) StopSIPInboundLine(lineID string) error {
+	_ = m
+	_ = lineID
+	return nil
+}
+
+func (m *Manager) PruneSIPInboundLines(active map[string]struct{}) error {
+	_ = m
+	_ = active
+	return nil
+}
+
+func (m *Manager) SIPConfigForICCID(iccid string) (SIPConfig, bool) {
+	_ = m
+	_ = iccid
+	return SIPConfig{}, false
+}
+
+func (m *Manager) DialSIP(iccid, number string) error {
+	_ = m
+	_ = iccid
+	_ = number
+	return errUACDisabled
+}
+
+func (m *Manager) HangupSIP(iccid string) error {
+	_ = m
+	_ = iccid
+	return errUACDisabled
+}
+
+func (m *Manager) SendSIPDTMF(iccid, tone string) error {
+	_ = m
+	_ = iccid
+	_ = tone
+	return errUACDisabled
+}
+
+func (m *Manager) HasActiveSIPCall(iccid string) bool {
+	_ = m
+	_ = iccid
+	return false
 }

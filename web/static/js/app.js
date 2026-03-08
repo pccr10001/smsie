@@ -20,6 +20,7 @@ let callPC = null;
 let callLocalStream = null;
 let callWSState = 'idle';
 let callStatePollTimer = null;
+let modemSettingsRefreshTimer = null;
 
 function closeCallSignaling() {
     if (callLocalStream) {
@@ -44,30 +45,40 @@ function stopCallStatePolling() {
     }
 }
 
+function normalizeFlag(value) {
+    return value === true || value === 'true' || value === 1;
+}
+
+function stopModemSettingsRefresh() {
+    if (modemSettingsRefreshTimer) {
+        clearTimeout(modemSettingsRefreshTimer);
+        modemSettingsRefreshTimer = null;
+    }
+}
+
 function refreshCallStateUI(iccid) {
     $.get('/api/v1/modems/' + iccid + '/call/state', function (state) {
-        if (state && state.state) {
-            $('#call-status').text(`Call state: ${state.state}${state.reason ? ` (${state.reason})` : ''}`);
-        }
-
         const hasUACFlag = !!(state && Object.prototype.hasOwnProperty.call(state, 'uac_ready'));
-        const uacReady = !!(state && (state.uac_ready === true || state.uac_ready === 'true' || state.uac_ready === 1));
-        const callState = state && state.state ? state.state : 'idle';
-        const canSendDTMF = callState === 'dialing' || callState === 'in_call';
+        const uacReady = normalizeFlag(state && state.uac_ready);
+        const callState = state && state.state ? String(state.state) : 'idle';
+        const callActive = callState === 'dialing' || callState === 'in_call';
+
+        $('#call-status').text(`Call state: ${callState}${state && state.reason ? ` (${state.reason})` : ''}`);
 
         if (hasUACFlag && !uacReady) {
             $('#call-panel').addClass('d-none');
-            $('#call-not-ready').removeClass('d-none').text('UAC is not enabled on this modem.');
+            $('#call-not-ready').removeClass('d-none').text('UAC is not enabled on this modem. WebRTC calling is unavailable.');
             $('#btn-call-dial').prop('disabled', true);
             $('#btn-call-hangup').prop('disabled', true);
             $('.btn-dtmf').prop('disabled', true);
-        } else {
-            $('#call-not-ready').addClass('d-none').text('');
-            $('#call-panel').removeClass('d-none');
-            $('#btn-call-dial').prop('disabled', false);
-            $('#btn-call-hangup').prop('disabled', false);
-            $('.btn-dtmf').prop('disabled', !canSendDTMF);
+            return;
         }
+
+        $('#call-not-ready').addClass('d-none').text('');
+        $('#call-panel').removeClass('d-none');
+        $('#btn-call-dial').prop('disabled', callActive);
+        $('#btn-call-hangup').prop('disabled', !callActive);
+        $('.btn-dtmf').prop('disabled', !callActive);
     }).fail(function (xhr) {
         const msg = xhr && xhr.responseJSON && xhr.responseJSON.error ? xhr.responseJSON.error : 'call state unavailable';
         $('#call-panel').addClass('d-none');
@@ -395,10 +406,8 @@ function checkAuth() {
     // Hide Admin Menus if User
     if (auth.role !== 'admin') {
         $('#nav-users').addClass('d-none');
-        $('#nav-settings').addClass('d-none');
     } else {
         $('#nav-users').removeClass('d-none');
-        $('#nav-settings').removeClass('d-none');
     }
 
     loadModems(); // Preload for filter
@@ -530,32 +539,73 @@ function loadModems() {
             if (!$('#view-modems').hasClass('d-none')) {
                 const statusClass = m.status === 'online' ? 'online' : 'offline';
                 const workerExists = !(Object.prototype.hasOwnProperty.call(m, 'worker_exists')) || !!m.worker_exists;
-                const statusText = workerExists ? (m.status || 'offline') : 'Not Exists';
+                const statusText = workerExists ? (m.status || 'offline') : 'offline';
                 const callSupported = !!m.call_supported;
-                const actionButtons = auth.role === 'admin'
-                    ? `<button class="btn btn-sm btn-outline-secondary w-100 mt-2" onclick="manageWebhooks('${m.iccid}')">${window.t('webhooks') || 'Webhooks'}</button>
-                                 <button class="btn btn-sm btn-outline-success w-100 mt-1" onclick="showSMSModal('${m.iccid}')">SMS</button>
-                                 ${callSupported ? `<button class="btn btn-sm btn-outline-success w-100 mt-1" onclick="showCallModal('${m.iccid}')">Call</button>` : ''}
-                                 <button class="btn btn-sm btn-outline-primary w-100 mt-1" onclick="showModemSettings('${m.iccid}')">${window.t('settings') || 'Settings'}</button>`
+                const sipListenerText = m.sip_listen_port
+                    ? `${m.sip_listener_transport || 'SIP'} ${m.sip_listen_port}${m.sip_listener_active ? '' : ' (inactive)'}`
+                    : '-';
+                const sipListenerLine = callSupported
+                    ? `<div class="small text-secondary mb-3">SIP Listener: ${sipListenerText}</div>`
                     : '';
+
+                const commonButtons = `
+                    <button class="btn btn-sm btn-outline-secondary" onclick="showSMSModal('${m.iccid}')">SMS</button>
+                    ${callSupported ? `<button class="btn btn-sm btn-outline-secondary" onclick="showCallModal('${m.iccid}')">Call</button>` : ''}
+                    <button class="btn btn-sm btn-outline-secondary" onclick="showModemSettings('${m.iccid}')">${window.t('settings') || 'Settings'}</button>
+                `;
+                const adminButtons = auth.role === 'admin'
+                    ? `
+                        <button class="btn btn-sm btn-outline-secondary" onclick="manageWebhooks('${m.iccid}')">${window.t('webhooks') || 'Webhooks'}</button>
+                      `
+                    : '';
+
                 list.append(`
-                    <div class="col-md-4 mb-3">
-                        <div class="card p-3">
-                            <h5><span class="connection-status-dot ${statusClass}"></span> ${getFlagFromICCID(m.iccid)} ${m.name ? m.name : m.iccid}</h5>
-                            ${m.name ? `<p class="mb-1 text-muted small">${m.iccid}</p>` : ''}
-                            <p class="mb-1"><strong>Status:</strong> ${statusText}</p>
-                            <p class="mb-1"><strong>IMEI:</strong> ${m.imei}</p>
-                            <p class="mb-1"><strong>${window.t('operator')}:</strong> ${m.operator || 'Not Registered'}</p>
-                            <p class="mb-1"><strong>${window.t('registration')}:</strong> ${m.registration || 'Unknown'}</p>
-                            <p class="mb-2"><strong>${window.t('signal')}:</strong> ${m.signal_strength > 0 ? m.signal_strength : 'Unknown'}</p>
-                            <p class="text-muted small">Port: ${m.port_name}</p>
-                            ${actionButtons}
+                    <article class="modem-card">
+                        <div class="d-flex align-items-center justify-content-between mb-2">
+                            <h5 class="mb-0"><span class="dot ${statusClass}"></span>${getFlagFromICCID(m.iccid)} ${m.name ? m.name : m.iccid}</h5>
+                            <span class="badge text-bg-light text-uppercase">${statusText}</span>
                         </div>
-                    </div>
+                        ${m.name ? `<div class="mono text-secondary mb-2">${m.iccid}</div>` : ''}
+                        <div class="small"><strong>IMEI:</strong> ${m.imei || '-'}</div>
+                        <div class="small"><strong>${window.t('operator')}:</strong> ${m.operator || 'Unknown'}</div>
+                        <div class="small"><strong>${window.t('registration')}:</strong> ${m.registration || 'Unknown'}</div>
+                        <div class="small"><strong>${window.t('signal')}:</strong> ${m.signal_strength > 0 ? `${m.signal_strength}%` : '0%'}</div>
+                        <div class="small text-secondary mb-3">Port: ${m.port_name || '-'}</div>
+                        ${sipListenerLine}
+                        <div class="d-flex flex-wrap gap-2">
+                            ${commonButtons}
+                            ${adminButtons}
+                        </div>
+                    </article>
                 `);
             }
         });
         select.val(currentVal);
+    });
+}
+
+window.deleteModem = function (iccid) {
+    if (!iccid) return;
+    if (!confirm(`Delete ICCID ${iccid}?\\nThis will remove modem profile, SMS history, webhooks, and modem permissions.`)) {
+        return;
+    }
+
+    $.ajax({
+        url: `/api/v1/modems/${encodeURIComponent(iccid)}`,
+        method: 'DELETE',
+        success: function () {
+            loadModems();
+            loadSMS(1);
+        },
+        error: function (xhr) {
+            let msg = "Delete failed";
+            if (xhr.responseJSON && xhr.responseJSON.error) {
+                msg = xhr.responseJSON.error;
+            } else if (xhr.responseText) {
+                msg = xhr.responseText;
+            }
+            alert(msg);
+        }
     });
 }
 
@@ -710,27 +760,165 @@ window.deleteWebhook = function (id) {
 }
 
 // Modem Settings
-// Modem Settings
+function updateModemSIPFieldVisibility() {
+    const enabled = $('#m-sip-enabled').is(':checked');
+    $('#m-sip-fields').toggleClass('d-none', !enabled);
+}
+
+function formatSIPStatusTime(value) {
+    if (!value) {
+        return '';
+    }
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+        return '';
+    }
+    return parsed.toLocaleString();
+}
+
+function describeModemSIPStatus(modem) {
+    const enabled = normalizeFlag(modem && modem.sip_enabled);
+    const workerExists = normalizeFlag(modem && modem.worker_exists);
+    const uacReady = normalizeFlag(modem && modem.call_supported);
+    const username = String(modem && modem.sip_username ? modem.sip_username : '').trim();
+    const proxy = String(modem && modem.sip_proxy ? modem.sip_proxy : '').trim();
+    const state = String(modem && modem.sip_register_state ? modem.sip_register_state : '').trim().toLowerCase();
+    const reason = String(modem && modem.sip_register_reason ? modem.sip_register_reason : '').trim();
+    let summary = 'Inactive';
+
+    if (!enabled) {
+        summary = 'Disabled';
+    } else if (!workerExists) {
+        summary = 'Modem offline';
+    } else if (!uacReady) {
+        summary = 'UAC unavailable';
+    } else if (!username || !proxy) {
+        summary = 'Incomplete settings';
+    } else if (state == 'registered') {
+        summary = 'Registered';
+    } else if (state == 'connecting') {
+        summary = 'Connecting';
+    } else if (state == 'error') {
+        summary = reason ? `Error: ${reason}` : 'Error';
+    } else if (state) {
+        summary = state.charAt(0).toUpperCase() + state.slice(1);
+    } else if (modem && modem.sip_listener_active) {
+        summary = 'Listener active';
+    } else if (modem && modem.sip_listen_port) {
+        summary = 'Assigned / inactive';
+    }
+
+    let detail = summary;
+    if (reason && !detail.toLowerCase().includes(reason.toLowerCase())) {
+        detail += ` (${reason})`;
+    }
+    const updatedAt = formatSIPStatusTime(modem && modem.sip_register_updated_at ? modem.sip_register_updated_at : '');
+    if (updatedAt) {
+        detail += ` @ ${updatedAt}`;
+    }
+
+    return { summary: summary, detail: detail };
+}
+
+function syncModemSIPUI(modem) {
+    const current = Object.assign({}, modem || {}, {
+        sip_enabled: $('#m-sip-enabled').is(':checked'),
+        sip_username: $('#m-sip-username').val(),
+        sip_proxy: $('#m-sip-proxy').val(),
+        sip_transport: $('#m-sip-transport-select').val(),
+    });
+    const status = describeModemSIPStatus(current);
+    const displayedTransport = current.sip_listener_transport
+        ? String(current.sip_listener_transport).toUpperCase()
+        : String(current.sip_transport || 'udp').toUpperCase();
+
+    updateModemSIPFieldVisibility();
+    $('#m-sip-status').val(status.summary);
+    $('#m-sip-runtime-status').val(status.detail);
+    $('#m-sip-port-display').val(current.sip_listen_port ? current.sip_listen_port : '-');
+    $('#m-sip-transport').val(displayedTransport);
+
+    let warning = '';
+    if (!normalizeFlag(current.worker_exists)) {
+        warning = 'Modem is offline. SIP client will remain stopped until this ICCID is detected again.';
+    } else if (!normalizeFlag(current.call_supported)) {
+        warning = 'This modem does not expose UAC audio right now. SIP and WebRTC calling are disabled until a UAC-capable modem is attached.';
+    } else if (normalizeFlag(current.sip_enabled) && (!String(current.sip_username || '').trim() || !String(current.sip_proxy || '').trim())) {
+        warning = 'Username and SIP Proxy are required before registration can succeed.';
+    }
+
+    $('#m-sip-warning').toggleClass('d-none', warning === '').text(warning);
+}
+
+function populateModemSettingsForm(modem) {
+    const current = modem || {};
+    $('#modemModal').data('modem', current);
+    $('#m-name').val(current.name || '');
+    $('#m-operator').val(current.operator || '');
+    $('#m-sip-enabled').prop('checked', normalizeFlag(current.sip_enabled));
+    $('#m-sip-username').val(current.sip_username || '');
+    $('#m-sip-password').val('');
+    $('#m-sip-password').attr('placeholder', normalizeFlag(current.sip_has_password) ? 'Leave blank to keep current password' : 'Optional');
+    $('#m-sip-proxy').val(current.sip_proxy || '');
+    $('#m-sip-server-port').val(current.sip_port || '');
+    $('#m-sip-domain').val(current.sip_domain || '');
+    $('#m-sip-transport-select').val(String(current.sip_transport || 'udp').toLowerCase());
+    $('#m-sip-port').val(current.sip_listen_port || 0);
+    $('#m-sip-register').prop('checked', !Object.prototype.hasOwnProperty.call(current, 'sip_register') || normalizeFlag(current.sip_register));
+    $('#m-sip-skip-verify').prop('checked', normalizeFlag(current.sip_tls_skip_verify));
+    syncModemSIPUI(current);
+}
+
+function loadModemSettingsIntoModal(iccid) {
+    $.get('/api/v1/modems/' + iccid, function (modem) {
+        populateModemSettingsForm(modem || {});
+    }).fail(function (xhr) {
+        const msg = xhr && xhr.responseJSON && xhr.responseJSON.error ? xhr.responseJSON.error : 'Failed to load modem settings';
+        $('#modem-status').html(`<span class="text-danger">${msg}</span>`);
+    });
+}
+
 window.showModemSettings = function (iccid) {
+    stopModemSettingsRefresh();
     $('#m-iccid-title').text(iccid);
     $('#m-iccid').val(iccid);
-    $('#m-name').val("");
-    $('#m-operator').val("");
+    $('#m-name').val('');
+    $('#m-operator').val('');
+    $('#m-sip-enabled').prop('checked', false);
+    $('#m-sip-username').val('');
+    $('#m-sip-password').val('');
+    $('#m-sip-proxy').val('');
+    $('#m-sip-server-port').val('');
+    $('#m-sip-domain').val('');
+    $('#m-sip-transport-select').val('udp');
+    $('#m-sip-port').val(0);
+    $('#m-sip-register').prop('checked', true);
+    $('#m-sip-skip-verify').prop('checked', false);
+    $('#m-sip-port-display').val('-');
+    $('#m-sip-transport').val('UDP');
+    $('#m-sip-status').val('Inactive');
+    $('#m-sip-runtime-status').val('Inactive');
+    $('#m-sip-warning').addClass('d-none').text('');
     $('#scan-results').empty();
-    $('#at-log').val("");
-    $('#at-input').val("");
+    $('#at-log').val('');
+    $('#at-input').val('');
     $('#modem-status').text('');
+    $('#modemModal').data('modem', { iccid: iccid, sip_transport: 'udp' });
+    updateModemSIPFieldVisibility();
 
-    // Fetch current details
-    $.get('/api/v1/modems/' + iccid, function (m) {
-        if (m) {
-            $('#m-name').val(m.name || "");
-            $('#m-operator').val(m.operator || "");
-        }
-    });
+    if (auth.role === 'admin') {
+        $('#btn-delete-modem').removeClass('d-none').prop('disabled', false);
+    } else {
+        $('#btn-delete-modem').addClass('d-none');
+    }
 
     $('#modemModal').modal('show');
+    loadModemSettingsIntoModal(iccid);
 }
+
+$(document).on('change input', '#m-sip-enabled, #m-sip-username, #m-sip-proxy, #m-sip-transport-select', function () {
+    syncModemSIPUI($('#modemModal').data('modem') || {});
+});
 
 window.showSMSModal = function (iccid) {
     $('#sms-iccid-title').text(iccid);
@@ -742,7 +930,15 @@ window.showSMSModal = function (iccid) {
 }
 
 $('#modemModal').on('hidden.bs.modal', function () {
+    stopModemSettingsRefresh();
     $('#modem-status').text('');
+});
+
+$(document).on('click', '#btn-delete-modem', function () {
+    const iccid = $('#m-iccid').val();
+    if (!iccid) return;
+    $('#modemModal').modal('hide');
+    deleteModem(iccid);
 });
 
 window.showCallModal = function (iccid) {
@@ -792,7 +988,7 @@ $(document).on('click', '#btn-call-dial', function () {
         } catch (error) {
             statusDiv.html(`<span class="text-danger">${error.message || 'WebRTC init failed'}</span>`);
             dialBtn.prop('disabled', false);
-            hangupBtn.prop('disabled', false);
+            hangupBtn.prop('disabled', true);
             return;
         }
 
@@ -807,9 +1003,10 @@ $(document).on('click', '#btn-call-dial', function () {
                 const state = resp && resp.call_state ? resp.call_state.state : 'dialing';
                 const reason = resp && resp.call_state ? resp.call_state.reason : '';
                 statusDiv.html(`<span class="text-success">Call state: ${state}${reason ? ` (${reason})` : ''}</span>`);
+                refreshCallStateUI(iccid);
             },
             error: function (xhr) {
-                let msg = "Dial failed";
+                let msg = 'Dial failed';
                 if (xhr.responseJSON && xhr.responseJSON.error) {
                     msg = xhr.responseJSON.error;
                 } else if (xhr.responseText) {
@@ -817,6 +1014,7 @@ $(document).on('click', '#btn-call-dial', function () {
                 }
                 closeCallSignaling();
                 statusDiv.html(`<span class="text-danger">${msg}</span>`);
+                refreshCallStateUI(iccid);
             },
             complete: function () {
                 dialBtn.prop('disabled', false);
@@ -839,20 +1037,24 @@ $(document).on('click', '#btn-call-hangup', function () {
     $.ajax({
         url: `/api/v1/modems/${iccid}/call/hangup`,
         method: 'POST',
+        contentType: 'application/json',
+        data: '{}',
         success: function (resp) {
             const state = resp && resp.call_state ? resp.call_state.state : 'idle';
             const reason = resp && resp.call_state ? resp.call_state.reason : '';
             statusDiv.html(`<span class="text-success">Call state: ${state}${reason ? ` (${reason})` : ''}</span>`);
             closeCallSignaling();
+            refreshCallStateUI(iccid);
         },
         error: function (xhr) {
-            let msg = "Hangup failed";
+            let msg = 'Hangup failed';
             if (xhr.responseJSON && xhr.responseJSON.error) {
                 msg = xhr.responseJSON.error;
             } else if (xhr.responseText) {
                 msg = xhr.responseText;
             }
             statusDiv.html(`<span class="text-danger">${msg}</span>`);
+            refreshCallStateUI(iccid);
         },
         complete: function () {
             dialBtn.prop('disabled', false);
@@ -875,10 +1077,10 @@ $(document).on('click', '.btn-dtmf', function () {
     }
 
     $.ajax({
-        url: `/api/v1/modems/${iccid}/at`,
+        url: `/api/v1/modems/${iccid}/call/dtmf`,
         method: 'POST',
         contentType: 'application/json',
-        data: JSON.stringify({ cmd: `AT+VTS="${tone}"`, timeout: 5000 }),
+        data: JSON.stringify({ tone: tone }),
         success: function () {
             statusDiv.html(`<span class="text-muted">DTMF sent: ${tone}</span>`);
         },
@@ -976,20 +1178,55 @@ $('#btn-send-sms').click(function () {
 
 $('#btn-save-modem').click(function () {
     const iccid = $('#m-iccid').val();
-    const name = $('#m-name').val();
-    // Only saving Name here. Operator is separate buttons.
+    const statusDiv = $('#modem-status');
+    const sipPort = parseInt($('#m-sip-server-port').val(), 10) || 0;
+    const sipListenPort = parseInt($('#m-sip-port').val(), 10) || 0;
+    const payload = {
+        name: $('#m-name').val(),
+        sip_enabled: $('#m-sip-enabled').is(':checked'),
+        sip_username: $('#m-sip-username').val().trim(),
+        sip_password: $('#m-sip-password').val(),
+        sip_proxy: $('#m-sip-proxy').val().trim(),
+        sip_port: sipPort,
+        sip_domain: $('#m-sip-domain').val().trim(),
+        sip_transport: String($('#m-sip-transport-select').val() || 'udp').trim().toLowerCase(),
+        sip_register: $('#m-sip-register').is(':checked'),
+        sip_tls_skip_verify: $('#m-sip-skip-verify').is(':checked'),
+        sip_listen_port: sipListenPort,
+    };
+
+    if (payload.sip_port < 0 || payload.sip_port > 65535 || payload.sip_listen_port < 0 || payload.sip_listen_port > 65535) {
+        statusDiv.html('<span class="text-danger">SIP ports must be between 0 and 65535.</span>');
+        return;
+    }
+
+    statusDiv.html('<span class="text-muted">Saving modem settings...</span>');
+    stopModemSettingsRefresh();
 
     $.ajax({
         url: '/api/v1/modems/' + iccid,
         method: 'PUT',
         contentType: 'application/json',
-        data: JSON.stringify({ name: name }),
-        success: function () {
-            $('#modemModal').modal('hide');
+        data: JSON.stringify(payload),
+        success: function (resp) {
+            populateModemSettingsForm(resp || {});
             loadModems();
+            statusDiv.html('<span class="text-success">Settings saved. Refreshing SIP runtime status...</span>');
+            modemSettingsRefreshTimer = setTimeout(function () {
+                if ($('#modemModal').hasClass('show') && $('#m-iccid').val() === iccid) {
+                    loadModemSettingsIntoModal(iccid);
+                    $('#modem-status').html('<span class="text-success">Settings saved.</span>');
+                }
+            }, 3500);
         },
-        error: function (err) {
-            alert("Error: " + err.responseText);
+        error: function (xhr) {
+            let msg = 'Failed to save modem settings';
+            if (xhr.responseJSON && xhr.responseJSON.error) {
+                msg = xhr.responseJSON.error;
+            } else if (xhr.responseText) {
+                msg = xhr.responseText;
+            }
+            statusDiv.html(`<span class="text-danger">${msg}</span>`);
         }
     });
 });

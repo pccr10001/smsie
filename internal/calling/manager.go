@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/pion/webrtc/v4"
 )
@@ -14,6 +15,14 @@ type Session struct {
 	Peer   *WebRTCPeer
 	Bridge *AudioBridge
 	Target ModemTarget
+
+	sipMu   sync.Mutex
+	sipCall *sipClientCall
+
+	stateMu    sync.RWMutex
+	callState  string
+	callReason string
+	updatedAt  time.Time
 }
 
 type Manager struct {
@@ -25,6 +34,9 @@ type Manager struct {
 
 	mu       sync.Mutex
 	sessions map[string]*Session
+
+	sipGatewayMu sync.Mutex
+	sipGateways  map[string]*sipInboundGateway
 }
 
 func NewManager(cfg Config, logger *log.Logger) (*Manager, error) {
@@ -57,11 +69,12 @@ func NewManager(cfg Config, logger *log.Logger) (*Manager, error) {
 	}
 
 	return &Manager{
-		logger:    logger,
-		cfg:       cfg,
-		api:       api,
-		webrtcCfg: webrtc.Configuration{ICEServers: iceServers},
-		sessions:  map[string]*Session{},
+		logger:      logger,
+		cfg:         cfg,
+		api:         api,
+		webrtcCfg:   webrtc.Configuration{ICEServers: iceServers},
+		sessions:    map[string]*Session{},
+		sipGateways: map[string]*sipInboundGateway{},
 	}, nil
 }
 
@@ -80,6 +93,7 @@ func (m *Manager) EnsureSession(iccid string, target ModemTarget) (*Session, err
 	}
 
 	s := &Session{Peer: peer, Target: target}
+	s.setCallState("idle", "init")
 	m.sessions[iccid] = s
 	return s, nil
 }
@@ -119,6 +133,16 @@ func (m *Manager) uplinkAudioLoop(iccid string, s *Session) {
 		if frame == nil {
 			continue
 		}
+
+		s.sipMu.Lock()
+		sipCall := s.sipCall
+		s.sipMu.Unlock()
+		if sipCall != nil {
+			if err := sipCall.SendPCMFromUAC(frame); err != nil && !isNetClosedError(err) {
+				m.logger.Printf("[%s] send PCM to sip failed: %v", iccid, err)
+			}
+		}
+
 		if s.Peer == nil || s.Peer.PeerConnection() == nil {
 			continue
 		}
@@ -148,6 +172,8 @@ func (m *Manager) CloseSession(iccid string) error {
 	}
 
 	var closeErr error
+	s.closeSIP("session_closed")
+
 	if err := s.Peer.Close(); err != nil {
 		closeErr = err
 	}
@@ -163,6 +189,8 @@ func (m *Manager) CloseSession(iccid string) error {
 }
 
 func (m *Manager) CloseAll() error {
+	_ = m.StopSIPInbound()
+
 	m.mu.Lock()
 	keys := make([]string, 0, len(m.sessions))
 	for k := range m.sessions {
@@ -193,4 +221,18 @@ func (m *Manager) RequireConnected(iccid string) error {
 		return errors.New("webrtc not connected")
 	}
 	return nil
+}
+
+func (s *Session) setCallState(state, reason string) {
+	s.stateMu.Lock()
+	s.callState = state
+	s.callReason = reason
+	s.updatedAt = time.Now()
+	s.stateMu.Unlock()
+}
+
+func (s *Session) getCallState() (state, reason string, updatedAt time.Time) {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.callState, s.callReason, s.updatedAt
 }

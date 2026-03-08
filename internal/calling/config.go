@@ -7,6 +7,7 @@ type Config struct {
 	UDPPortMin  uint16
 	UDPPortMax  uint16
 	Audio       AudioConfig
+	SIP         SIPConfig
 }
 
 type AudioConfig struct {
@@ -17,6 +18,29 @@ type AudioConfig struct {
 	BitsPerSample    int
 	CaptureChunkMs   int
 	PlaybackChunkMs  int
+}
+
+type SIPConfig struct {
+	Enabled            bool
+	ModemICCID         string
+	ModemICCIDs        []string
+	Username           string
+	Password           string
+	Proxy              string
+	Port               int
+	Domain             string
+	Transport          string
+	TLSSkipVerify      bool
+	Register           bool
+	RegisterExpires    int
+	LocalHost          string
+	LocalPort          int
+	RTPBindIP          string
+	RTPPortMin         int
+	RTPPortMax         int
+	InviteTimeoutSec   int
+	DTMFMethod         string
+	DTMFDurationMillis int
 }
 
 func (a AudioConfig) CaptureSamples() int {

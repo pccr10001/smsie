@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/warthog618/sms"
 
@@ -26,20 +25,15 @@ func NewSMSHandler(db *gorm.DB) *SMSHandler {
 }
 
 func (h *SMSHandler) ListSMS(c *gin.Context) {
-	userObj, exists := c.Get("user")
-	if !exists {
+	actor, ok := getActor(c)
+	if !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
-	user := userObj.(*model.User)
 
-	isAdmin := (user.Role == "admin")
-	var allowed []string
-
-	if !isAdmin {
-		if user.AllowedModems != "" && user.AllowedModems != "*" {
-			allowed = strings.Split(user.AllowedModems, ",")
-		}
+	if actor.APIKey != nil && !actor.APIKey.CanViewSMS {
+		c.JSON(http.StatusForbidden, gin.H{"error": "API key permission denied"})
+		return
 	}
 
 	limitStr := c.DefaultQuery("limit", "20")
@@ -66,23 +60,28 @@ func (h *SMSHandler) ListSMS(c *gin.Context) {
 	}
 
 	iccid := c.Query("iccid")
+	allowedForView, err := allowedICCIDsForPermission(h.db, actor.User, PermViewSMS)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "permission check failed"})
+		return
+	}
+	isAdmin := actor.User != nil && actor.User.Role == "admin"
 
 	query := h.db.Model(&model.SMS{}) // Start with model to allow counting
 
 	if iccid != "" {
-		// If user requests specific ICCID, ensure they have access
-		if !isAdmin && !contains(allowed, iccid) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Access denied to this ICCID"})
+		if !enforceICCIDPermission(c, h.db, iccid, PermViewSMS) {
 			return
 		}
 		query = query.Where("iccid = ?", iccid)
 	} else {
-		// If no ICCID specified, filter by allowed
 		if !isAdmin {
-			if len(allowed) == 0 {
+			if len(allowedForView) == 0 {
 				query = query.Where("1 = 0")
+			} else if hasWildcardICCID(allowedForView) {
+				// wildcard: do not constrain iccid
 			} else {
-				query = query.Where("iccid IN ?", allowed)
+				query = query.Where("iccid IN ?", allowedForView)
 			}
 		}
 	}
@@ -112,7 +111,8 @@ func (h *SMSHandler) ListSMS(c *gin.Context) {
 			msg, err := sms.Unmarshal(d)
 			content := ""
 			if err != nil {
-				log.Panic(err)
+				logger.Log.Warnf("Failed to unmarshal sms pdu: %v", err)
+				continue
 			}
 			// Use tpdu.DecodeUserData to correctly handle GSM7/UCS2 encoding
 			alphabet, alphaErr := msg.DCS.Alphabet()
@@ -152,13 +152,4 @@ func (h *SMSHandler) ListSMS(c *gin.Context) {
 		"page":  page,
 		"limit": limit,
 	})
-}
-
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
 }

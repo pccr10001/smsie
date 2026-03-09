@@ -246,6 +246,9 @@ func autoMigrateSchema(db *gorm.DB) error {
 	if err := migrateLegacyModemSIPColumns(db); err != nil {
 		return err
 	}
+	if err := migrateLegacyUserModemPermissionColumns(db); err != nil {
+		return err
+	}
 	return db.AutoMigrate(&model.User{}, &model.Modem{}, &model.SMS{}, &model.Webhook{}, &model.UserModemPermission{}, &model.APIKey{})
 }
 
@@ -280,6 +283,26 @@ func migrateLegacyModemSIPColumns(db *gorm.DB) error {
 			logger.Log.Warnf("legacy modem column %s still exists alongside %s; leaving both columns in place", legacy, current)
 		}
 	}
+	return nil
+}
+
+func migrateLegacyUserModemPermissionColumns(db *gorm.DB) error {
+	migrator := db.Migrator()
+	if !migrator.HasTable(&model.UserModemPermission{}) {
+		return nil
+	}
+
+	legacyExists := migrator.HasColumn(&model.UserModemPermission{}, "icc_id")
+	currentExists := migrator.HasColumn(&model.UserModemPermission{}, "iccid")
+	switch {
+	case legacyExists && !currentExists:
+		if err := migrator.RenameColumn(&model.UserModemPermission{}, "icc_id", "iccid"); err != nil {
+			return fmt.Errorf("rename user_modem_permissions.icc_id to iccid: %w", err)
+		}
+	case legacyExists && currentExists:
+		logger.Log.Warnf("legacy user_modem_permissions column icc_id still exists alongside iccid; leaving both columns in place")
+	}
+
 	return nil
 }
 

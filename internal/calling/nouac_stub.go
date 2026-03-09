@@ -12,6 +12,18 @@ import (
 
 var errUACDisabled = errors.New("UAC/calling disabled in this build")
 
+func IsSIPCallInProgressError(err error) bool {
+	return false
+}
+
+func IsSIPInvalidDialNumberError(err error) bool {
+	return false
+}
+
+func IsSIPNoActiveCallError(err error) bool {
+	return false
+}
+
 type Config struct {
 	STUNServers []string
 	UDPPortMin  uint16

@@ -20,7 +20,7 @@ type User struct {
 type UserModemPermission struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`
 	UserID      uint      `gorm:"index:idx_user_iccid,unique;not null" json:"user_id"`
-	ICCID       string    `gorm:"index:idx_user_iccid,unique;not null" json:"iccid"`
+	ICCID       string    `gorm:"column:iccid;index:idx_user_iccid,unique;not null" json:"iccid"`
 	CanMakeCall bool      `gorm:"default:false" json:"can_make_call"`
 	CanViewSMS  bool      `gorm:"default:false" json:"can_view_sms"`
 	CanSendSMS  bool      `gorm:"default:false" json:"can_send_sms"`

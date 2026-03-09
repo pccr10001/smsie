@@ -47,26 +47,28 @@ type APIKey struct {
 }
 
 type Modem struct {
-	ICCID            string    `gorm:"primaryKey;column:iccid" json:"iccid"`
-	Name             string    `gorm:"column:name" json:"name"` // User defined alias
-	IMEI             string    `gorm:"column:imei" json:"imei"`
-	SIPEnabled       bool      `gorm:"column:sip_enabled" json:"sip_enabled"`
-	SIPUsername      string    `gorm:"column:sip_username" json:"sip_username,omitempty"`
-	SIPPassword      string    `gorm:"column:sip_password" json:"-"`
-	SIPProxy         string    `gorm:"column:sip_proxy" json:"sip_proxy,omitempty"`
-	SIPPort          int       `gorm:"column:sip_port" json:"sip_port"`
-	SIPDomain        string    `gorm:"column:sip_domain" json:"sip_domain,omitempty"`
-	SIPTransport     string    `gorm:"column:sip_transport" json:"sip_transport,omitempty"`
-	SIPRegister      bool      `gorm:"column:sip_register" json:"sip_register"`
-	SIPTLSSkipVerify bool      `gorm:"column:sip_tls_skip_verify" json:"sip_tls_skip_verify"`
-	SIPListenPort    int       `gorm:"column:sip_listen_port" json:"sip_listen_port"`
-	SIPHasPassword   bool      `gorm:"-" json:"sip_has_password,omitempty"`
-	Operator         string    `gorm:"-" json:"operator"`        // runtime field (not persisted as source of truth)
-	SignalStrength   int       `gorm:"-" json:"signal_strength"` // runtime field (CSQ)
-	PortName         string    `gorm:"-" json:"port_name"`       // Current COM port, can change
-	Status           string    `gorm:"-" json:"status"`          // runtime field: online/offline
-	Registration     string    `gorm:"-" json:"registration"`    // runtime field
-	LastSeen         time.Time `gorm:"-" json:"last_seen"`       // runtime field
+	ICCID             string    `gorm:"primaryKey;column:iccid" json:"iccid"`
+	Name              string    `gorm:"column:name" json:"name"` // User defined alias
+	IMEI              string    `gorm:"column:imei" json:"imei"`
+	SIPEnabled        bool      `gorm:"column:sip_enabled" json:"sip_enabled"`
+	SIPUsername       string    `gorm:"column:sip_username" json:"sip_username,omitempty"`
+	SIPPassword       string    `gorm:"column:sip_password" json:"-"`
+	SIPProxy          string    `gorm:"column:sip_proxy" json:"sip_proxy,omitempty"`
+	SIPPort           int       `gorm:"column:sip_port" json:"sip_port"`
+	SIPDomain         string    `gorm:"column:sip_domain" json:"sip_domain,omitempty"`
+	SIPTransport      string    `gorm:"column:sip_transport" json:"sip_transport,omitempty"`
+	SIPRegister       bool      `gorm:"column:sip_register" json:"sip_register"`
+	SIPTLSSkipVerify  bool      `gorm:"column:sip_tls_skip_verify" json:"sip_tls_skip_verify"`
+	SIPListenPort     int       `gorm:"column:sip_listen_port" json:"sip_listen_port"`
+	SIPAcceptIncoming bool      `gorm:"column:sip_accept_incoming" json:"sip_accept_incoming"`
+	SIPInviteTarget   string    `gorm:"column:sip_invite_target" json:"sip_invite_target,omitempty"`
+	SIPHasPassword    bool      `gorm:"-" json:"sip_has_password,omitempty"`
+	Operator          string    `gorm:"-" json:"operator"`        // runtime field (not persisted as source of truth)
+	SignalStrength    int       `gorm:"-" json:"signal_strength"` // runtime field (CSQ)
+	PortName          string    `gorm:"-" json:"port_name"`       // Current COM port, can change
+	Status            string    `gorm:"-" json:"status"`          // runtime field: online/offline
+	Registration      string    `gorm:"-" json:"registration"`    // runtime field
+	LastSeen          time.Time `gorm:"-" json:"last_seen"`       // runtime field
 }
 
 type SMS struct {

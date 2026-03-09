@@ -70,9 +70,16 @@ type commandRequest struct {
 }
 
 type callSnapshot struct {
-	State     string
-	Reason    string
-	UpdatedAt time.Time
+	State           string
+	Reason          string
+	Number          string
+	Direction       int
+	Stat            int
+	Mode            int
+	Incoming        bool
+	Voice           bool
+	IncomingRinging bool
+	UpdatedAt       time.Time
 }
 
 const (
@@ -602,11 +609,11 @@ func (w *ModemWorker) shouldHandleCallURC(line string) bool {
 		return true
 	}
 
-	if strings.HasPrefix(upper, "+CLCC:") || strings.HasPrefix(upper, "+QIND:") {
+	if strings.HasPrefix(upper, "+CLCC:") {
 		return true
 	}
 
-	return false
+	return isCCInfoQIND(line)
 }
 
 func (w *ModemWorker) handleCallURC(line string) {
@@ -615,45 +622,144 @@ func (w *ModemWorker) handleCallURC(line string) {
 	switch {
 	case upper == "RING":
 		if w.GetCallState().State == callStateIdle {
-			w.setCallState(callStateDialing, "ring")
+			w.setCallStateWithMeta(callStateDialing, "ring", clearCallDetails)
 		}
 	case upper == "NO CARRIER":
-		w.setCallState(callStateIdle, "no_carrier")
+		w.setCallStateWithMeta(callStateIdle, "no_carrier", clearCallDetails)
 	case upper == "BUSY":
-		w.setCallState(callStateIdle, "busy")
+		w.setCallStateWithMeta(callStateIdle, "busy", clearCallDetails)
 	case upper == "NO ANSWER":
-		w.setCallState(callStateIdle, "no_answer")
+		w.setCallStateWithMeta(callStateIdle, "no_answer", clearCallDetails)
 	case upper == "NO DIALTONE":
-		w.setCallState(callStateIdle, "no_dialtone")
+		w.setCallStateWithMeta(callStateIdle, "no_dialtone", clearCallDetails)
 	case strings.HasPrefix(upper, "+CLCC:"):
-		state, reason := parseCLCCState(line)
-		if state != "" {
-			w.setCallState(state, reason)
+		if info, ok := parseCLCCState(line); ok {
+			w.applyCLCCState(info, "clcc")
+		}
+	case isCCInfoQIND(line):
+		if info, ok := parseCCInfoState(line); ok {
+			w.applyCLCCState(info, "ccinfo")
 		}
 	}
 }
 
-func parseCLCCState(line string) (string, string) {
+type clccDetails struct {
+	Direction int
+	Stat      int
+	Mode      int
+	Number    string
+}
+
+func isCCInfoQIND(line string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(line))
+	return strings.HasPrefix(upper, "+QIND:") && strings.Contains(upper, "\"CCINFO\"")
+}
+
+func parseCCInfoState(line string) (clccDetails, bool) {
 	idx := strings.Index(line, ":")
 	if idx < 0 || idx+1 >= len(line) {
-		return "", ""
+		return clccDetails{}, false
 	}
 	body := strings.TrimSpace(line[idx+1:])
 	parts := strings.Split(body, ",")
-	if len(parts) < 3 {
-		return "", ""
+	if len(parts) < 6 {
+		return clccDetails{}, false
+	}
+	if strings.Trim(strings.TrimSpace(parts[0]), "\"") != "ccinfo" {
+		return clccDetails{}, false
+	}
+	return parseCLCCLikeParts(parts[1:])
+}
+
+func parseCLCCState(line string) (clccDetails, bool) {
+	idx := strings.Index(line, ":")
+	if idx < 0 || idx+1 >= len(line) {
+		return clccDetails{}, false
+	}
+	body := strings.TrimSpace(line[idx+1:])
+	parts := strings.Split(body, ",")
+	return parseCLCCLikeParts(parts)
+}
+
+func parseCLCCLikeParts(parts []string) (clccDetails, bool) {
+	if len(parts) < 5 {
+		return clccDetails{}, false
 	}
 
-	stat := strings.TrimSpace(parts[2])
-	// 3GPP TS 27.007: 0 active, 1 held, 2 dialing, 3 alerting, 4 incoming, 5 waiting
-	switch stat {
-	case "0", "1":
-		return callStateInCall, "clcc_active"
-	case "2", "3", "4", "5":
-		return callStateDialing, "clcc_progress"
-	default:
-		return "", ""
+	direction, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return clccDetails{}, false
 	}
+	stat, err := strconv.Atoi(strings.TrimSpace(parts[2]))
+	if err != nil {
+		return clccDetails{}, false
+	}
+	mode, err := strconv.Atoi(strings.TrimSpace(parts[3]))
+	if err != nil {
+		return clccDetails{}, false
+	}
+
+	number := ""
+	if len(parts) >= 6 {
+		number = strings.Trim(strings.TrimSpace(parts[5]), "\"")
+	}
+
+	return clccDetails{
+		Direction: direction,
+		Stat:      stat,
+		Mode:      mode,
+		Number:    number,
+	}, true
+}
+
+func (w *ModemWorker) applyCLCCState(info clccDetails, source string) {
+	incomingVoice := info.Direction == 1 && info.Mode == 0
+	incomingRinging := incomingVoice && (info.Stat == 4 || info.Stat == 5)
+	state := ""
+	reason := ""
+
+	switch info.Stat {
+	case 0, 1:
+		state = callStateInCall
+		if incomingVoice {
+			reason = source + "_incoming_active"
+		} else {
+			reason = source + "_active"
+		}
+	case 2, 3:
+		state = callStateDialing
+		reason = source + "_progress"
+	case 4, 5:
+		state = callStateDialing
+		if incomingVoice {
+			reason = source + "_incoming"
+		} else {
+			reason = source + "_progress"
+		}
+	case -1:
+		// Quectel ccinfo reports stat=-1 while the call is being released.
+		// Keep the existing state and wait for NO CARRIER as the final signal.
+	}
+
+	w.setCallStateWithMeta(state, reason, func(snapshot *callSnapshot) {
+		snapshot.Number = info.Number
+		snapshot.Direction = info.Direction
+		snapshot.Stat = info.Stat
+		snapshot.Mode = info.Mode
+		snapshot.Incoming = incomingVoice
+		snapshot.Voice = info.Mode == 0
+		snapshot.IncomingRinging = incomingRinging
+	})
+}
+
+func clearCallDetails(snapshot *callSnapshot) {
+	snapshot.Number = ""
+	snapshot.Direction = 0
+	snapshot.Stat = 0
+	snapshot.Mode = 0
+	snapshot.Incoming = false
+	snapshot.Voice = false
+	snapshot.IncomingRinging = false
 }
 
 func (w *ModemWorker) GetCallState() callSnapshot {
@@ -663,23 +769,42 @@ func (w *ModemWorker) GetCallState() callSnapshot {
 }
 
 func (w *ModemWorker) setCallState(state, reason string) {
-	if state == "" {
+	w.setCallStateWithMeta(state, reason, nil)
+}
+
+func (w *ModemWorker) setCallStateWithMeta(state, reason string, update func(*callSnapshot)) {
+	if state == "" && update == nil {
 		return
 	}
 
 	w.callMu.Lock()
 	prev := w.call
-	if prev.State == state {
+	next := prev
+	if state != "" {
+		next.State = state
+	}
+	if reason != "" {
+		next.Reason = reason
+	}
+	if update != nil {
+		update(&next)
+	}
+	if next == prev {
 		w.callMu.Unlock()
 		return
 	}
-	w.call.State = state
-	w.call.Reason = reason
-	w.call.UpdatedAt = time.Now()
-	next := w.call
+	next.UpdatedAt = time.Now()
+	w.call = next
 	w.callMu.Unlock()
 
-	logger.Log.Infof("[%s] Call state changed: %s -> %s (%s)", w.PortName, prev.State, next.State, reason)
+	if prev.State != next.State {
+		logger.Log.Infof("[%s] Call state changed: %s -> %s (%s)", w.PortName, prev.State, next.State, next.Reason)
+	} else {
+		logger.Log.Debugf("[%s] Call info updated: state=%s reason=%s number=%s dir=%d stat=%d mode=%d incoming=%t", w.PortName, next.State, next.Reason, next.Number, next.Direction, next.Stat, next.Mode, next.Incoming)
+	}
+	if w.manager != nil {
+		w.manager.notifyCallStateChanged(w, w.callStateFromSnapshot(next))
+	}
 }
 
 func (w *ModemWorker) Dial(number string) error {
@@ -707,14 +832,60 @@ func (w *ModemWorker) Dial(number string) error {
 		return fmt.Errorf("enable UAC voice failed: %w", err)
 	}
 
-	w.setCallState(callStateDialing, "dial")
+	w.setCallStateWithMeta(callStateDialing, "dial", func(snapshot *callSnapshot) {
+		clearCallDetails(snapshot)
+		snapshot.Number = number
+		snapshot.Direction = 0
+		snapshot.Stat = 2
+		snapshot.Mode = 0
+		snapshot.Voice = true
+	})
 	if _, err := w.ExecuteAT("ATD"+number+";", 15*time.Second); err != nil {
 		_, _ = w.ExecuteATSilent(`AT+QPCMV=0`, 3*time.Second)
-		w.setCallState(callStateIdle, "dial_error")
+		w.setCallStateWithMeta(callStateIdle, "dial_error", clearCallDetails)
 		return err
 	}
 
-	w.setCallState(callStateInCall, "dial_ok")
+	w.setCallStateWithMeta(callStateInCall, "dial_ok", func(snapshot *callSnapshot) {
+		snapshot.Stat = 0
+		snapshot.Mode = 0
+		snapshot.Voice = true
+		snapshot.IncomingRinging = false
+	})
+	return nil
+}
+
+func (w *ModemWorker) Answer() error {
+	if !callingEnabled() {
+		return errors.New("calling disabled in this build")
+	}
+
+	w.callOpMu.Lock()
+	defer w.callOpMu.Unlock()
+
+	current := w.GetCallState()
+	if current.State == callStateIdle || !current.Incoming {
+		return errors.New("no incoming call to answer")
+	}
+
+	w.SetBusy(true)
+	defer w.SetBusy(false)
+
+	if _, err := w.ExecuteAT(`AT+QPCMV=1,2`, 5*time.Second); err != nil {
+		return fmt.Errorf("enable UAC voice failed: %w", err)
+	}
+	if _, err := w.ExecuteAT("ATA", 15*time.Second); err != nil {
+		_, _ = w.ExecuteATSilent(`AT+QPCMV=0`, 3*time.Second)
+		return err
+	}
+
+	w.setCallStateWithMeta(callStateInCall, "answer_ok", func(snapshot *callSnapshot) {
+		snapshot.Stat = 0
+		snapshot.Mode = 0
+		snapshot.Incoming = true
+		snapshot.Voice = true
+		snapshot.IncomingRinging = false
+	})
 	return nil
 }
 
@@ -726,6 +897,13 @@ func (w *ModemWorker) Hangup() error {
 	w.callOpMu.Lock()
 	defer w.callOpMu.Unlock()
 
+	current := w.GetCallState()
+	if current.State == callStateIdle {
+		_, _ = w.ExecuteATSilent(`AT+QPCMV=0`, 3*time.Second)
+		w.setCallStateWithMeta(callStateIdle, "hangup", clearCallDetails)
+		return nil
+	}
+
 	w.SetBusy(true)
 	defer w.SetBusy(false)
 
@@ -734,7 +912,7 @@ func (w *ModemWorker) Hangup() error {
 	}
 	_, _ = w.ExecuteATSilent(`AT+QPCMV=0`, 3*time.Second)
 
-	w.setCallState(callStateIdle, "hangup")
+	w.setCallStateWithMeta(callStateIdle, "hangup", clearCallDetails)
 	return nil
 }
 

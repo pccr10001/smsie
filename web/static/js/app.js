@@ -15,6 +15,10 @@ let auth = {
     role: localStorage.getItem('sms_role'), // 'admin' or 'user'
 };
 
+let currentSMSPage = 1;
+let modemMap = {};
+let lastAPIKeySecret = '';
+
 let callWS = null;
 let callPC = null;
 let callLocalStream = null;
@@ -315,11 +319,15 @@ $(document).ready(function () {
 
         if (id === 'view-sms') loadSMS();
         if (id === 'view-modems') loadModems();
+        if (id === 'view-apikeys') loadAPIKeys();
         if (id === 'view-users') loadUsers();
     });
 
     $('#btn-refresh-sms').click(() => loadSMS(1));
     $('#sms-filter-modem').change(() => loadSMS(1));
+    $('#btn-create-apikey').click(createAPIKey);
+    $('#btn-refresh-apikeys').click(loadAPIKeys);
+    $('#btn-copy-apikey').click(copyLatestAPIKeySecret);
 
     // User Mgmt
     $('#btn-save-user').click(saveUser);
@@ -410,6 +418,8 @@ function checkAuth() {
         $('#nav-users').removeClass('d-none');
     }
 
+    $('#nav-apikeys').removeClass('d-none');
+    renderMCPExamples();
     loadModems(); // Preload for filter
     loadSMS();
 }
@@ -664,6 +674,250 @@ window.deleteUser = function (id) {
         });
     }
 }
+
+function escapeHTML(value) {
+    return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function formatDateTime(value) {
+    if (!value) {
+        return '-';
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+        return escapeHTML(value);
+    }
+    return escapeHTML(date.toLocaleString());
+}
+
+function renderAPIKeyPermissions(key) {
+    const badges = [];
+    if (key.can_view_sms) badges.push('<span class="api-perm-badge">View SMS</span>');
+    if (key.can_send_sms) badges.push('<span class="api-perm-badge">Send SMS</span>');
+    if (key.can_send_at) badges.push('<span class="api-perm-badge">Send AT</span>');
+    if (key.can_make_call) badges.push('<span class="api-perm-badge">Make Call</span>');
+    if (!badges.length) {
+        return '<span class="text-muted">None</span>';
+    }
+    return `<div class="api-perm-list">${badges.join('')}</div>`;
+}
+
+function renderMCPExamples() {
+    const endpoint = `${location.origin}/mcp`;
+    $('#mcp-base-url').text(endpoint);
+    $('#mcp-example-modems').text(JSON.stringify({
+        mcpServers: {
+            smsie: {
+                type: 'streamable-http',
+                url: endpoint,
+                headers: {
+                    Authorization: 'Bearer smsie_xxx'
+                }
+            }
+        }
+    }, null, 2));
+    $('#mcp-example-list-sms').text([
+        'list_modems',
+        'list_sms',
+        'wait_sms',
+        'send_sms'
+    ].join(''));
+    $('#mcp-example-wait-sms').text(JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: {
+            name: 'list_sms',
+            arguments: {
+                iccid: 'YOUR_ICCID',
+                page: 1,
+                page_size: 20,
+                max_records: 100,
+                type: 'received'
+            }
+        }
+    }, null, 2));
+    $('#mcp-example-send-sms').text('Initialize with POST /mcp, keep the returned Mcp-Session-Id header, then let your MCP client call tools over the same Streamable HTTP session. GET /mcp opens the optional SSE stream, and DELETE /mcp closes the session.');
+}
+
+function showAPIKeySecret(secret) {
+    lastAPIKeySecret = secret || '';
+    if (!lastAPIKeySecret) {
+        $('#apikey-secret-panel').addClass('d-none');
+        $('#apikey-secret-value').text('');
+        return;
+    }
+    $('#apikey-secret-value').text(lastAPIKeySecret);
+    $('#apikey-secret-panel').removeClass('d-none');
+}
+
+function copyLatestAPIKeySecret() {
+    if (!lastAPIKeySecret) {
+        return;
+    }
+    if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(lastAPIKeySecret).then(function () {
+            $('#btn-copy-apikey').text('Copied');
+            setTimeout(function () {
+                $('#btn-copy-apikey').html('<i class="bi bi-clipboard"></i> Copy');
+            }, 1500);
+        });
+        return;
+    }
+    window.prompt('Copy API key', lastAPIKeySecret);
+}
+
+function resetAPIKeyForm() {
+    $('#apikey-name').val('');
+    $('#apikey-expires-at').val('');
+    $('#apikey-can-view-sms').prop('checked', true);
+    $('#apikey-can-send-sms').prop('checked', true);
+    $('#apikey-can-send-at').prop('checked', false);
+    $('#apikey-can-make-call').prop('checked', false);
+}
+
+function loadAPIKeys() {
+    renderMCPExamples();
+    $.get('/api/v1/apikeys', function (data) {
+        const body = $('#apikey-list-body');
+        body.empty();
+
+        if (!Array.isArray(data) || data.length === 0) {
+            body.append('<tr><td colspan="6" class="text-center text-muted py-4">No API keys yet.</td></tr>');
+            return;
+        }
+
+        data.forEach(key => {
+            body.append(`
+                <tr>
+                    <td>${escapeHTML(key.name || 'default')}</td>
+                    <td class="mono">${escapeHTML(key.key_prefix || '-')}</td>
+                    <td>${renderAPIKeyPermissions(key)}</td>
+                    <td>${formatDateTime(key.expires_at)}</td>
+                    <td>${formatDateTime(key.last_used_at)}</td>
+                    <td>
+                        <div class="d-flex gap-2 flex-wrap">
+                            <button class="btn btn-sm btn-outline-secondary" onclick="rotateAPIKey(${key.id})"><i class="bi bi-arrow-repeat"></i> Rotate</button>
+                            <button class="btn btn-sm btn-outline-danger" onclick="deleteAPIKey(${key.id})"><i class="bi bi-trash"></i> Delete</button>
+                        </div>
+                    </td>
+                </tr>
+            `);
+        });
+    }).fail(function (xhr) {
+        let msg = 'Failed to load API keys';
+        if (xhr.responseJSON && xhr.responseJSON.error) {
+            msg = xhr.responseJSON.error;
+        }
+        $('#apikey-list-body').html(`<tr><td colspan="6" class="text-center text-danger py-4">${escapeHTML(msg)}</td></tr>`);
+    });
+}
+
+function createAPIKey() {
+    const btn = $('#btn-create-apikey');
+    const status = $('#apikey-create-status');
+    const expiresAtRaw = $('#apikey-expires-at').val();
+    let expiresAt = '';
+
+    if (expiresAtRaw) {
+        const parsed = new Date(expiresAtRaw);
+        if (Number.isNaN(parsed.getTime())) {
+            status.html('<span class="text-danger">Invalid expires time.</span>');
+            return;
+        }
+        expiresAt = parsed.toISOString();
+    }
+
+    const payload = {
+        name: $('#apikey-name').val().trim(),
+        can_view_sms: $('#apikey-can-view-sms').is(':checked'),
+        can_send_sms: $('#apikey-can-send-sms').is(':checked'),
+        can_send_at: $('#apikey-can-send-at').is(':checked'),
+        can_make_call: $('#apikey-can-make-call').is(':checked')
+    };
+    if (expiresAt) {
+        payload.expires_at = expiresAt;
+    }
+
+    btn.prop('disabled', true);
+    status.html('<span class="text-muted">Creating API key...</span>');
+
+    $.ajax({
+        url: '/api/v1/apikeys',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify(payload),
+        success: function (resp) {
+            status.html('<span class="text-success">API key created.</span>');
+            resetAPIKeyForm();
+            showAPIKeySecret(resp.api_key || '');
+            loadAPIKeys();
+        },
+        error: function (xhr) {
+            let msg = 'Failed to create API key';
+            if (xhr.responseJSON && xhr.responseJSON.error) {
+                msg = xhr.responseJSON.error;
+            } else if (xhr.responseText) {
+                msg = xhr.responseText;
+            }
+            status.html(`<span class="text-danger">${escapeHTML(msg)}</span>`);
+        },
+        complete: function () {
+            btn.prop('disabled', false);
+        }
+    });
+}
+
+window.rotateAPIKey = function (id) {
+    if (!confirm('Rotate this API key? The old secret will stop working immediately.')) {
+        return;
+    }
+    $.ajax({
+        url: `/api/v1/apikeys/${id}/rotate`,
+        method: 'POST',
+        success: function (resp) {
+            showAPIKeySecret(resp.api_key || '');
+            loadAPIKeys();
+        },
+        error: function (xhr) {
+            let msg = 'Failed to rotate API key';
+            if (xhr.responseJSON && xhr.responseJSON.error) {
+                msg = xhr.responseJSON.error;
+            } else if (xhr.responseText) {
+                msg = xhr.responseText;
+            }
+            alert(msg);
+        }
+    });
+}
+
+window.deleteAPIKey = function (id) {
+    if (!confirm('Delete this API key?')) {
+        return;
+    }
+    $.ajax({
+        url: `/api/v1/apikeys/${id}`,
+        method: 'DELETE',
+        success: function () {
+            loadAPIKeys();
+        },
+        error: function (xhr) {
+            let msg = 'Failed to delete API key';
+            if (xhr.responseJSON && xhr.responseJSON.error) {
+                msg = xhr.responseJSON.error;
+            } else if (xhr.responseText) {
+                msg = xhr.responseText;
+            }
+            alert(msg);
+        }
+    });
+}
+
 // Webhook Modal
 let currentICCIDForWebhook = "";
 
@@ -762,7 +1016,10 @@ window.deleteWebhook = function (id) {
 // Modem Settings
 function updateModemSIPFieldVisibility() {
     const enabled = $('#m-sip-enabled').is(':checked');
+    const acceptIncoming = $('#m-sip-accept-incoming').is(':checked');
     $('#m-sip-fields').toggleClass('d-none', !enabled);
+    $('#m-sip-incoming-target').prop('disabled', !enabled || !acceptIncoming);
+    $('#m-sip-incoming-target-row').toggleClass('opacity-50', !enabled || !acceptIncoming);
 }
 
 function formatSIPStatusTime(value) {
@@ -826,6 +1083,8 @@ function syncModemSIPUI(modem) {
         sip_username: $('#m-sip-username').val(),
         sip_proxy: $('#m-sip-proxy').val(),
         sip_transport: $('#m-sip-transport-select').val(),
+        sip_accept_incoming: $('#m-sip-accept-incoming').is(':checked'),
+        sip_invite_target: $('#m-sip-incoming-target').val(),
     });
     const status = describeModemSIPStatus(current);
     const displayedTransport = current.sip_listener_transport
@@ -845,6 +1104,8 @@ function syncModemSIPUI(modem) {
         warning = 'This modem does not expose UAC audio right now. SIP and WebRTC calling are disabled until a UAC-capable modem is attached.';
     } else if (normalizeFlag(current.sip_enabled) && (!String(current.sip_username || '').trim() || !String(current.sip_proxy || '').trim())) {
         warning = 'Username and SIP Proxy are required before registration can succeed.';
+    } else if (normalizeFlag(current.sip_enabled) && normalizeFlag(current.sip_accept_incoming) && !String(current.sip_invite_target || '').trim()) {
+        warning = 'Incoming forwarding is enabled, but Incoming Invite Target is blank. Incoming modem calls will not be forwarded until a target is set.';
     }
 
     $('#m-sip-warning').toggleClass('d-none', warning === '').text(warning);
@@ -866,6 +1127,8 @@ function populateModemSettingsForm(modem) {
     $('#m-sip-port').val(current.sip_listen_port || 0);
     $('#m-sip-register').prop('checked', !Object.prototype.hasOwnProperty.call(current, 'sip_register') || normalizeFlag(current.sip_register));
     $('#m-sip-skip-verify').prop('checked', normalizeFlag(current.sip_tls_skip_verify));
+    $('#m-sip-accept-incoming').prop('checked', normalizeFlag(current.sip_accept_incoming));
+    $('#m-sip-incoming-target').val(current.sip_invite_target || '');
     syncModemSIPUI(current);
 }
 
@@ -894,6 +1157,8 @@ window.showModemSettings = function (iccid) {
     $('#m-sip-port').val(0);
     $('#m-sip-register').prop('checked', true);
     $('#m-sip-skip-verify').prop('checked', false);
+    $('#m-sip-accept-incoming').prop('checked', false);
+    $('#m-sip-incoming-target').val('');
     $('#m-sip-port-display').val('-');
     $('#m-sip-transport').val('UDP');
     $('#m-sip-status').val('Inactive');
@@ -916,7 +1181,7 @@ window.showModemSettings = function (iccid) {
     loadModemSettingsIntoModal(iccid);
 }
 
-$(document).on('change input', '#m-sip-enabled, #m-sip-username, #m-sip-proxy, #m-sip-transport-select', function () {
+$(document).on('change input', '#m-sip-enabled, #m-sip-username, #m-sip-proxy, #m-sip-transport-select, #m-sip-accept-incoming, #m-sip-incoming-target', function () {
     syncModemSIPUI($('#modemModal').data('modem') || {});
 });
 
@@ -1192,6 +1457,8 @@ $('#btn-save-modem').click(function () {
         sip_transport: String($('#m-sip-transport-select').val() || 'udp').trim().toLowerCase(),
         sip_register: $('#m-sip-register').is(':checked'),
         sip_tls_skip_verify: $('#m-sip-skip-verify').is(':checked'),
+        sip_accept_incoming: $('#m-sip-accept-incoming').is(':checked'),
+        sip_invite_target: $('#m-sip-incoming-target').val().trim(),
         sip_listen_port: sipListenPort,
     };
 

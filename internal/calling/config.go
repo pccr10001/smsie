@@ -32,6 +32,8 @@ type SIPConfig struct {
 	Transport          string
 	TLSSkipVerify      bool
 	Register           bool
+	AcceptIncoming     bool
+	InviteTarget       string
 	RegisterExpires    int
 	LocalHost          string
 	LocalPort          int

@@ -306,17 +306,19 @@ func (h *ModemHandler) UpdateModem(c *gin.Context) {
 
 	iccid := c.Param("iccid")
 	var req struct {
-		Name             string `json:"name"`
-		SIPEnabled       bool   `json:"sip_enabled"`
-		SIPUsername      string `json:"sip_username"`
-		SIPPassword      string `json:"sip_password"`
-		SIPProxy         string `json:"sip_proxy"`
-		SIPPort          int    `json:"sip_port"`
-		SIPDomain        string `json:"sip_domain"`
-		SIPTransport     string `json:"sip_transport"`
-		SIPRegister      bool   `json:"sip_register"`
-		SIPTLSSkipVerify bool   `json:"sip_tls_skip_verify"`
-		SIPListenPort    int    `json:"sip_listen_port"`
+		Name              string `json:"name"`
+		SIPEnabled        bool   `json:"sip_enabled"`
+		SIPUsername       string `json:"sip_username"`
+		SIPPassword       string `json:"sip_password"`
+		SIPProxy          string `json:"sip_proxy"`
+		SIPPort           int    `json:"sip_port"`
+		SIPDomain         string `json:"sip_domain"`
+		SIPTransport      string `json:"sip_transport"`
+		SIPRegister       bool   `json:"sip_register"`
+		SIPTLSSkipVerify  bool   `json:"sip_tls_skip_verify"`
+		SIPListenPort     int    `json:"sip_listen_port"`
+		SIPAcceptIncoming bool   `json:"sip_accept_incoming"`
+		SIPInviteTarget   string `json:"sip_invite_target"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -364,6 +366,8 @@ func (h *ModemHandler) UpdateModem(c *gin.Context) {
 		"sip_register":        req.SIPRegister,
 		"sip_tls_skip_verify": req.SIPTLSSkipVerify,
 		"sip_listen_port":     req.SIPListenPort,
+		"sip_accept_incoming": req.SIPAcceptIncoming,
+		"sip_invite_target":   strings.TrimSpace(req.SIPInviteTarget),
 	}
 	if strings.TrimSpace(req.SIPPassword) != "" {
 		updates["sip_password"] = req.SIPPassword
@@ -701,6 +705,13 @@ func (h *ModemHandler) GetCallState(c *gin.Context) {
 		"state":                  state,
 		"reason":                 reason,
 		"updated_at":             updatedAt,
+		"number":                 modemState.Number,
+		"direction":              modemState.Direction,
+		"stat":                   modemState.Stat,
+		"mode":                   modemState.Mode,
+		"incoming":               modemState.Incoming,
+		"voice":                  modemState.Voice,
+		"incoming_ringing":       modemState.IncomingRinging,
 		"uac_ready":              uacReady,
 		"uac_vid":                uacVID,
 		"uac_pid":                uacPID,

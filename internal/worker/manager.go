@@ -11,21 +11,24 @@ import (
 )
 
 type Manager struct {
-	workers      map[string]*ModemWorker
-	activeICCIDs map[string]string // iccid -> portName
-	probedPorts  map[string]bool   // portName -> probed once while present
-	mu           sync.RWMutex
-	stop         chan struct{}
-	db           *gorm.DB
+	workers                 map[string]*ModemWorker
+	activeICCIDs            map[string]string // iccid -> portName
+	probedPorts             map[string]bool   // portName -> probed once while present
+	callStateListeners      map[int]CallStateListener
+	nextCallStateListenerID int
+	mu                      sync.RWMutex
+	stop                    chan struct{}
+	db                      *gorm.DB
 }
 
 func NewManager(db *gorm.DB) *Manager {
 	return &Manager{
-		workers:      make(map[string]*ModemWorker),
-		activeICCIDs: make(map[string]string),
-		probedPorts:  make(map[string]bool),
-		stop:         make(chan struct{}),
-		db:           db,
+		workers:            make(map[string]*ModemWorker),
+		activeICCIDs:       make(map[string]string),
+		probedPorts:        make(map[string]bool),
+		callStateListeners: make(map[int]CallStateListener),
+		stop:               make(chan struct{}),
+		db:                 db,
 	}
 }
 

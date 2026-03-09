@@ -221,6 +221,47 @@ func hasWildcardICCID(list []string) bool {
 	return false
 }
 
+func actorCanAccessICCIDPermission(db *gorm.DB, actor *authActor, iccid, perm string) (bool, int, string) {
+	if actor == nil || actor.User == nil {
+		return false, 401, "Unauthorized"
+	}
+
+	if !userCanAccessICCID(actor.User, iccid) {
+		return false, 403, "Access denied for this modem"
+	}
+
+	if !permissionFlagFromKey(actor.APIKey, perm) {
+		return false, 403, "API key permission denied"
+	}
+
+	if actor.User.Role == "admin" {
+		return true, 0, ""
+	}
+
+	var rulesCount int64
+	if err := db.Model(&model.UserModemPermission{}).Where("user_id = ?", actor.User.ID).Count(&rulesCount).Error; err != nil {
+		return false, 500, "Permission check failed"
+	}
+	if rulesCount == 0 {
+		return true, 0, ""
+	}
+
+	var rule model.UserModemPermission
+	err := db.Where("user_id = ? AND iccid = ?", actor.User.ID, iccid).First(&rule).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return false, 403, "Permission denied for this modem"
+		}
+		return false, 500, "Permission check failed"
+	}
+
+	if !permissionFlagFromRule(&rule, perm) {
+		return false, 403, "Permission denied for this action"
+	}
+
+	return true, 0, ""
+}
+
 func enforceICCIDPermission(c *gin.Context, db *gorm.DB, iccid, perm string) bool {
 	actor, ok := getActor(c)
 	if !ok {
@@ -228,44 +269,11 @@ func enforceICCIDPermission(c *gin.Context, db *gorm.DB, iccid, perm string) boo
 		return false
 	}
 
-	if !userCanAccessICCID(actor.User, iccid) {
-		c.JSON(403, gin.H{"error": "Access denied for this modem"})
-		return false
-	}
-
-	if !permissionFlagFromKey(actor.APIKey, perm) {
-		c.JSON(403, gin.H{"error": "API key permission denied"})
-		return false
-	}
-
-	if actor.User.Role == "admin" {
+	allowed, status, message := actorCanAccessICCIDPermission(db, actor, iccid, perm)
+	if allowed {
 		return true
 	}
 
-	var rulesCount int64
-	if err := db.Model(&model.UserModemPermission{}).Where("user_id = ?", actor.User.ID).Count(&rulesCount).Error; err != nil {
-		c.JSON(500, gin.H{"error": "Permission check failed"})
-		return false
-	}
-	if rulesCount == 0 {
-		return true
-	}
-
-	var rule model.UserModemPermission
-	err := db.Where("user_id = ? AND iccid = ?", actor.User.ID, iccid).First(&rule).Error
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			c.JSON(403, gin.H{"error": "Permission denied for this modem"})
-			return false
-		}
-		c.JSON(500, gin.H{"error": "Permission check failed"})
-		return false
-	}
-
-	if !permissionFlagFromRule(&rule, perm) {
-		c.JSON(403, gin.H{"error": "Permission denied for this action"})
-		return false
-	}
-
-	return true
+	c.JSON(status, gin.H{"error": message})
+	return false
 }

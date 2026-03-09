@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -149,6 +149,39 @@
         padding: 1rem;
       }
 
+      .doc-block {
+        background: #142125;
+        color: #eff8f6;
+        border-radius: 14px;
+        padding: 0.9rem;
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 0.83rem;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .secret-card {
+        border: 1px solid rgba(15, 143, 122, 0.2);
+        background: linear-gradient(135deg, rgba(15, 143, 122, 0.08), rgba(15, 93, 117, 0.04));
+      }
+
+      .api-perm-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+      }
+
+      .api-perm-badge {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 0.18rem 0.55rem;
+        font-size: 0.75rem;
+        font-weight: 600;
+        background: rgba(15, 143, 122, 0.08);
+        color: var(--accent-2);
+      }
+
       .sms-item {
         border-bottom: 1px solid #edf0f1;
         padding: 0.8rem 0.2rem;
@@ -289,6 +322,7 @@
           <nav class="nav flex-column">
             <a class="nav-link active" href="#" id="nav-sms"><i class="bi bi-chat-left-text"></i> <span data-i18n="nav_sms">Messages</span></a>
             <a class="nav-link" href="#" id="nav-modems"><i class="bi bi-sim"></i> <span data-i18n="nav_modems">Modems</span></a>
+            <a class="nav-link" href="#" id="nav-apikeys"><i class="bi bi-key"></i> <span>API Key</span></a>
             <a class="nav-link" href="#" id="nav-users"><i class="bi bi-people"></i> <span data-i18n="nav_users">Users</span></a>
           </nav>
 
@@ -326,6 +360,109 @@
               <h2 class="view-title" data-i18n="modems_title">Modems</h2>
             </div>
             <div id="modem-list" class="modem-grid"></div>
+          </section>
+
+          <section id="view-apikeys" class="view-section d-none">
+            <div class="view-head">
+              <h2 class="view-title">API Key</h2>
+            </div>
+            <div class="row g-3">
+              <div class="col-xl-7">
+                <div class="panel mb-3">
+                  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+                    <div>
+                      <h5 class="mb-1">Create API Key</h5>
+                      <div class="text-secondary small">Use fine-grained permissions. API keys inherit modem visibility from the owning user and do not bypass ICCID access rules.</div>
+                    </div>
+                  </div>
+                  <div class="row g-3">
+                    <div class="col-md-6">
+                      <label class="form-label">Name</label>
+                      <input id="apikey-name" class="form-control" placeholder="mcp-bot" />
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label">Expires At</label>
+                      <input id="apikey-expires-at" type="datetime-local" class="form-control" />
+                    </div>
+                    <div class="col-12">
+                      <label class="form-label d-block">Permissions</label>
+                      <div class="d-flex flex-wrap gap-3">
+                        <div class="form-check">
+                          <input class="form-check-input" type="checkbox" id="apikey-can-view-sms" checked />
+                          <label class="form-check-label" for="apikey-can-view-sms">View SMS</label>
+                        </div>
+                        <div class="form-check">
+                          <input class="form-check-input" type="checkbox" id="apikey-can-send-sms" checked />
+                          <label class="form-check-label" for="apikey-can-send-sms">Send SMS</label>
+                        </div>
+                        <div class="form-check">
+                          <input class="form-check-input" type="checkbox" id="apikey-can-send-at" />
+                          <label class="form-check-label" for="apikey-can-send-at">Send AT</label>
+                        </div>
+                        <div class="form-check">
+                          <input class="form-check-input" type="checkbox" id="apikey-can-make-call" />
+                          <label class="form-check-label" for="apikey-can-make-call">Make Call</label>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="col-12 d-flex justify-content-between align-items-center flex-wrap gap-2">
+                      <div id="apikey-create-status" class="small text-secondary"></div>
+                      <button id="btn-create-apikey" class="btn btn-accent"><i class="bi bi-key-fill"></i> Create API Key</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="panel secret-card d-none mb-3" id="apikey-secret-panel">
+                  <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap">
+                    <div>
+                      <h5 class="mb-1">New Secret</h5>
+                      <div class="text-secondary small">The full API key is only returned on create or rotate. Save it in your MCP client now.</div>
+                    </div>
+                    <button id="btn-copy-apikey" class="btn btn-outline-secondary btn-sm"><i class="bi bi-clipboard"></i> Copy</button>
+                  </div>
+                  <div id="apikey-secret-value" class="doc-block mt-3"></div>
+                </div>
+
+                <div class="panel">
+                  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+                    <h5 class="mb-0">Your API Keys</h5>
+                    <button id="btn-refresh-apikeys" class="btn btn-outline-secondary btn-sm"><i class="bi bi-arrow-repeat"></i> Refresh</button>
+                  </div>
+                  <div class="table-responsive">
+                    <table class="table align-middle mb-0">
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Prefix</th>
+                          <th>Permissions</th>
+                          <th>Expires</th>
+                          <th>Last Used</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody id="apikey-list-body"></tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+
+              <div class="col-xl-5">
+                <div class="panel">
+                  <h5 class="mb-3">MCP Streamable HTTP Usage</h5>
+                  <p class="text-secondary">Use a generated API key with a real MCP client over Streamable HTTP. The API key follows the same modem scope as the owning user, so it cannot read or send against ICCIDs the user cannot access.</p>
+                  <div class="small text-secondary mb-2">Endpoint</div>
+                  <div id="mcp-base-url" class="doc-block mb-3"></div>
+                  <div class="small text-secondary mb-2">Client config</div>
+                  <div id="mcp-example-modems" class="doc-block mb-3"></div>
+                  <div class="small text-secondary mb-2">Available tools</div>
+                  <div id="mcp-example-list-sms" class="doc-block mb-3"></div>
+                  <div class="small text-secondary mb-2">JSON-RPC example</div>
+                  <div id="mcp-example-wait-sms" class="doc-block mb-3"></div>
+                  <div class="small text-secondary mb-2">Session note</div>
+                  <div id="mcp-example-send-sms" class="doc-block"></div>
+                </div>
+              </div>
+            </div>
           </section>
 
           <section id="view-users" class="view-section d-none">
@@ -523,18 +660,29 @@
                 </div>
               </div>
               <div class="row g-3 mb-3">
-                <div class="col-sm-6">
+                <div class="col-sm-4">
                   <div class="form-check mt-4">
                     <input class="form-check-input" type="checkbox" id="m-sip-register" />
                     <label class="form-check-label" for="m-sip-register">Send REGISTER</label>
                   </div>
                 </div>
-                <div class="col-sm-6">
+                <div class="col-sm-4">
                   <div class="form-check mt-4">
                     <input class="form-check-input" type="checkbox" id="m-sip-skip-verify" />
                     <label class="form-check-label" for="m-sip-skip-verify">TLS Skip Verify</label>
                   </div>
                 </div>
+                <div class="col-sm-4">
+                  <div class="form-check mt-4">
+                    <input class="form-check-input" type="checkbox" id="m-sip-accept-incoming" />
+                    <label class="form-check-label" for="m-sip-accept-incoming">Accept Incoming</label>
+                  </div>
+                </div>
+              </div>
+              <div class="mb-3" id="m-sip-incoming-target-row">
+                <label class="form-label">Invite Target</label>
+                <input type="text" class="form-control mono" id="m-sip-incoming-target" placeholder="1001 or sip:1001@pbx.local" />
+                <div class="form-text">Only used for modem incoming calls. Incoming forwarding runs only when Accept Incoming is enabled and this target is not blank.</div>
               </div>
             </div>
 
@@ -698,3 +846,4 @@
     <script src="/static/js/app.js"></script>
   </body>
 </html>
+

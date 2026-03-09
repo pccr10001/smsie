@@ -2,7 +2,7 @@
 
 **smsie** is a robust SMS management dashboard written in Go. It allows you to manage multiple GSM/LTE modems receive SMS messages, and integrate with external services via webhooks.
 
-## 🚀 Features
+## ?? Features
 
 - **Modem Management**: Automatically scans and detects serial modems. Tracks signal strength, operator name, and registration status in real-time (runtime state, not persisted as DB source-of-truth).
 - **SMS Operations**:
@@ -28,7 +28,7 @@
 - **Modern UI**: Responsive web interface built with Bootstrap and jQuery.
 - **Cross Platform**: Windows / Linux are supported.
 
-## 🛠 Prerequisites
+## ?? Prerequisites
 
 - **Go 1.20+**
 - **Serial Drivers**: Ensure drivers for your modems are installed.
@@ -39,7 +39,7 @@
   - Following modems with voice supported are tested:
     - Quectel EC20
 
-## 📦 Installation
+## ? Installation
 
 1.  **Clone the repository:**
 
@@ -70,7 +70,7 @@
     go build # -tags nouac to disable UAC
     ```
 
-## ⚙️ Configuration
+## ?? Configuration
 
 The application uses a `config.yaml` file. If not present, create one based on the example structure:
 
@@ -124,7 +124,7 @@ log:
 
 Notes:
 - SIP account settings are not stored in global `config.yaml`.
-- Each modem has its own SIP settings in the modem settings dialog: `enable`, `username`, `password`, `proxy`, `port`, `domain`, `transport`, `register`, `tls skip verify`, and optional fixed `listener port`.
+- Each modem has its own SIP settings in the modem settings dialog: `enable`, `username`, `password`, `proxy`, `port`, `domain`, `transport`, `register`, `tls skip verify`, `accept incoming`, `invite target`, and optional fixed `listener port`.
 - Global `calling.sip` config only defines shared SIP runtime defaults such as listener port base, RTP range, REGISTER expiry, invite timeout, and DTMF behavior.
 - If a modem is not present or UAC is not ready, smsie automatically stops that modem's SIP client and hides browser call controls.
 - Existing databases are migrated on startup; older legacy modem SIP columns named `s_ip_*` are renamed to `sip_*` automatically.
@@ -149,7 +149,7 @@ Notes:
 - Each modem settings page can enable SIP client and set:
   - `username`, `password`, `proxy`, `port`, optional `domain`
   - `transport`: `udp`, `tcp`, or `tls`
-  - `register`, `tls skip verify`, and optional fixed `listener port`
+  - `register`, `tls skip verify`, `accept incoming`, `invite target`, and optional fixed `listener port`
 - SIP client starts only when that ICCID is present and UAC is ready.
 - If the modem is unplugged or UAC is unavailable, smsie automatically stops that modem's SIP client and the frontend will not show SIP/WebRTC call options for that modem.
 - One SIP listener/registration instance is maintained per modem, so multiple UAC-ready modems can keep multiple SIP connections at the same time.
@@ -159,6 +159,7 @@ Notes:
 - SIP INVITE handling for external line use:
   - Inbound SIP `INVITE <number>@<listener>` triggers modem dialing with `ATD<number>;`.
   - Audio is bridged through the modem's UAC device, not through browser WebRTC.
+  - Modem incoming PSTN calls are forwarded to SIP only when `accept incoming` is enabled and `invite target` is not blank.
 - TLS notes:
   - Outbound SIP client certificate verification can be disabled with per-modem `tls skip verify`.
   - SIP TLS listener uses a runtime-generated self-signed certificate unless you extend deployment with your own certificate handling.
@@ -237,7 +238,7 @@ For voice calling on Linux, the process user needs access to serial, USB bus, an
 
 After group/udev changes, re-login or reboot.
 
-## 📂 Data Files
+## ?? Data Files
 
 ### `mcc_mnc.json`
 
@@ -268,7 +269,7 @@ The application uses `mcc_mnc.json` to map numeric MCC/MNC codes to human-readab
 ]
 ```
 
-## 🚀 Usage
+## ?? Usage
 
 1.  **Run the server:**
 
@@ -287,14 +288,94 @@ The application uses `mcc_mnc.json` to map numeric MCC/MNC codes to human-readab
       ```
     - Log in with these credentials and change your password immediately.
 
-## 🔗 API Integration
+## API Integration
 
-smsie provides a RESTful API for integration.
+smsie provides both REST APIs for the dashboard and a real MCP server over Streamable HTTP.
 
-- **Base URL**: `/api/v1`
-- **Authentication**: Bearer Token (JWT)
+- **REST Base URL**: `/api/v1`
+- **MCP Endpoint**: `/mcp`
+- **Authentication**:
+  - Dashboard / browser REST APIs: `Authorization: Bearer <jwt>`
+  - MCP Streamable HTTP: `Authorization: Bearer smsie_xxxxx...`
+- **Authorization model**:
+  - API keys inherit the owning user's modem scope.
+  - API keys are further reduced by their own flags (`can_view_sms`, `can_send_sms`, `can_send_at`, `can_make_call`).
+  - MCP tools reuse the same ICCID permission checks as the dashboard APIs, so they do not introduce IDOR access to other modems.
 
-### Key Endpoints:
+### API Key Management
+
+- `GET /apikeys`: List your API keys.
+- `POST /apikeys`: Create an API key. The full `api_key` secret is only returned once.
+- `POST /apikeys/:id/rotate`: Rotate an existing API key. The old secret stops working immediately.
+- `DELETE /apikeys/:id`: Delete an API key.
+
+Example create body:
+
+```json
+{
+  "name": "mcp-bot",
+  "can_view_sms": true,
+  "can_send_sms": true,
+  "can_send_at": false,
+  "can_make_call": false,
+  "expires_at": "2026-03-31T00:00:00Z"
+}
+```
+
+### MCP Streamable HTTP
+
+smsie exposes a real MCP server on `/mcp` using Streamable HTTP and JSON-RPC.
+
+- Transport endpoint: `POST /mcp`, `GET /mcp`, `DELETE /mcp`
+- Auth: `Authorization: Bearer smsie_xxx`
+- Session model:
+  - Initialize with `POST /mcp`
+  - Keep the returned `Mcp-Session-Id` header for later requests
+  - `GET /mcp` opens the optional SSE stream
+  - `DELETE /mcp` closes the session
+- Exposed tools:
+  - `list_modems`
+  - `list_sms`
+  - `wait_sms`
+  - `send_sms`
+
+Example client configuration:
+
+```json
+{
+  "mcpServers": {
+    "smsie": {
+      "type": "streamable-http",
+      "url": "http://localhost:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer smsie_xxx"
+      }
+    }
+  }
+}
+```
+
+Example tool call payload after initialization:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "list_sms",
+    "arguments": {
+      "iccid": "YOUR_ICCID",
+      "page": 1,
+      "page_size": 20,
+      "max_records": 100,
+      "type": "received"
+    }
+  }
+}
+```
+
+### Other Key REST Endpoints
 
 - `GET /modems`: List connected modems with runtime worker/UAC/SIP state.
 - `GET /modems/:iccid`: Get one modem including per-modem SIP settings/status.
@@ -307,11 +388,11 @@ smsie provides a RESTful API for integration.
 - `POST /modems/:iccid/call/dial`: Dial a number. Browser UI uses body `{ "number": "09xxxxxxxx" }` after WebRTC signaling is ready.
 - `POST /modems/:iccid/call/hangup`: Hang up current call. If body `via` is omitted, server auto-selects the active call leg.
 - `POST /modems/:iccid/call/dtmf`: Send in-call DTMF. Body: `{ "tone": "5" }`. If body `via` is omitted, server auto-selects the active call leg.
-- `GET /sms`: List SMS messages.
+- `GET /sms`: List SMS messages for the dashboard.
 
 See the `openapi/` directory (if available) or code structure for detailed API definitions.
 
-## 🚢 Deployment
+## ? Deployment
 
 ### Systemd (Linux)
 
@@ -373,10 +454,11 @@ A `docker-compose.yml` is provided using the GHCR image.
     docker-compose down
     ```
 
-## 🤝 Contributing
+## ?? Contributing
 
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
 
-## 📄 License
+## ?? License
 
 [GPL-3.0](https://choosealicense.com/licenses/gpl-3.0/)
+

@@ -91,6 +91,8 @@ func main() {
 	}
 	defer callMgr.CloseAll()
 
+	registerSIPModemCallStateListener(wm, callMgr, stdLogger)
+
 	sipSyncStop := make(chan struct{})
 	defer close(sipSyncStop)
 	go runSIPInboundSyncLoop(db, wm, callMgr, calling.SIPConfig{
@@ -119,6 +121,8 @@ func main() {
 	wh := api.NewWebhookHandler(db)
 	uh := api.NewUserHandler(db)
 	akh := api.NewAPIKeyHandler(db)
+	mcpHTTP := api.NewMCPHTTPServer(db, wm)
+	r.Any("/mcp", gin.WrapH(mcpHTTP.Handler()))
 
 	apiGroup := r.Group("/api/v1")
 	{
@@ -279,6 +283,52 @@ func migrateLegacyModemSIPColumns(db *gorm.DB) error {
 	return nil
 }
 
+func registerSIPModemCallStateListener(wm *worker.Manager, callMgr *calling.Manager, stdLogger *log.Logger) {
+	if wm == nil || callMgr == nil || !callMgr.SIPEnabled() {
+		return
+	}
+
+	wm.AddCallStateListener(func(w *worker.ModemWorker, state worker.CallState) {
+		if w == nil {
+			return
+		}
+
+		rt, ok := w.RuntimeModemState()
+		if !ok || strings.TrimSpace(rt.ICCID) == "" {
+			return
+		}
+
+		target := calling.ModemTarget{}
+		if w.IsUACReady() {
+			vid, pid := w.UACIdentity()
+			target = calling.ModemTarget{PortName: w.PortName, VID: vid, PID: pid}
+		}
+
+		modemState := calling.ModemIncomingState{
+			State:           state.State,
+			Reason:          state.Reason,
+			Number:          state.Number,
+			Direction:       state.Direction,
+			Stat:            state.Stat,
+			Mode:            state.Mode,
+			Incoming:        state.Incoming,
+			Voice:           state.Voice,
+			IncomingRinging: state.IncomingRinging,
+			UpdatedAt:       state.UpdatedAt,
+		}
+		if !w.IsUACReady() {
+			modemState.State = "idle"
+			if strings.TrimSpace(modemState.Reason) == "" {
+				modemState.Reason = "modem_unavailable"
+			}
+		}
+
+		if err := callMgr.SyncModemIncomingSIP(rt.ICCID, target, modemState); err != nil {
+			stdLogger.Printf("sip modem state event sync failed [%s]: %v", rt.ICCID, err)
+		}
+	})
+}
+
 func runSIPInboundSyncLoop(db *gorm.DB, wm *worker.Manager, callMgr *calling.Manager, baseCfg calling.SIPConfig, stdLogger *log.Logger, stop <-chan struct{}) {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
@@ -348,6 +398,13 @@ func syncSIPInboundLines(db *gorm.DB, wm *worker.Manager, callMgr *calling.Manag
 				}
 				return w.Dial(number)
 			},
+			AnswerModem: func(usedICCID string) error {
+				w := wm.GetWorkerByICCID(usedICCID)
+				if w == nil {
+					return fmt.Errorf("modem %s not active", usedICCID)
+				}
+				return w.Answer()
+			},
 			HangupModem: func(usedICCID string) error {
 				w := wm.GetWorkerByICCID(usedICCID)
 				if w == nil {
@@ -404,6 +461,8 @@ func buildModemSIPConfig(modem model.Modem, base calling.SIPConfig) (calling.SIP
 	cfg.Transport = transport
 	cfg.TLSSkipVerify = modem.SIPTLSSkipVerify
 	cfg.Register = modem.SIPRegister
+	cfg.AcceptIncoming = modem.SIPAcceptIncoming
+	cfg.InviteTarget = strings.TrimSpace(modem.SIPInviteTarget)
 	return cfg, true
 }
 

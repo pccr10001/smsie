@@ -42,6 +42,8 @@ type SIPConfig struct {
 	Transport          string
 	TLSSkipVerify      bool
 	Register           bool
+	AcceptIncoming     bool
+	InviteTarget       string
 	RegisterExpires    int
 	LocalHost          string
 	LocalPort          int
@@ -57,6 +59,7 @@ type SIPInboundHooks struct {
 	ICCID        string
 	ResolveModem func() (iccid string, target ModemTarget, err error)
 	DialModem    func(iccid, number string) error
+	AnswerModem  func(iccid string) error
 	HangupModem  func(iccid string) error
 	SendDTMF     func(iccid, tone string) error
 }
@@ -70,6 +73,19 @@ type SIPInboundLineInfo struct {
 	RegisterState  string
 	RegisterReason string
 	UpdatedAt      time.Time
+}
+
+type ModemIncomingState struct {
+	State           string
+	Reason          string
+	Number          string
+	Direction       int
+	Stat            int
+	Mode            int
+	Incoming        bool
+	Voice           bool
+	IncomingRinging bool
+	UpdatedAt       time.Time
 }
 
 func (a AudioConfig) CaptureSamples() int {
@@ -307,6 +323,14 @@ func (m *Manager) SIPConfigForICCID(iccid string) (SIPConfig, bool) {
 	_ = m
 	_ = iccid
 	return SIPConfig{}, false
+}
+
+func (m *Manager) SyncModemIncomingSIP(iccid string, target ModemTarget, state ModemIncomingState) error {
+	_ = m
+	_ = iccid
+	_ = target
+	_ = state
+	return errUACDisabled
 }
 
 func (m *Manager) DialSIP(iccid, number string) error {

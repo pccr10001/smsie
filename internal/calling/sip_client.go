@@ -85,14 +85,16 @@ type sipClientCall struct {
 	rtpSeq         uint16
 	rtpTimestamp   uint32
 
-	writeMu   sync.Mutex
-	closeOnce sync.Once
+	modemControlled bool
+	writeMu         sync.Mutex
+	closeOnce       sync.Once
 }
 
 type SIPInboundHooks struct {
 	ICCID        string
 	ResolveModem func() (iccid string, target ModemTarget, err error)
 	DialModem    func(iccid, number string) error
+	AnswerModem  func(iccid string) error
 	HangupModem  func(iccid string) error
 	SendDTMF     func(iccid, tone string) error
 }
@@ -108,10 +110,34 @@ type SIPInboundLineInfo struct {
 	UpdatedAt      time.Time
 }
 
+type ModemIncomingState struct {
+	State           string
+	Reason          string
+	Number          string
+	Direction       int
+	Stat            int
+	Mode            int
+	Incoming        bool
+	Voice           bool
+	IncomingRinging bool
+	UpdatedAt       time.Time
+}
+
+type sipLegDirection string
+
+const (
+	sipLegDirectionInboundSIP    sipLegDirection = "sip_to_modem"
+	sipLegDirectionModemIncoming sipLegDirection = "modem_to_sip"
+)
+
 type sipInboundLeg struct {
-	dialogID string
-	iccid    string
-	call     *sipClientCall
+	dialogID     string
+	iccid        string
+	call         *sipClientCall
+	direction    sipLegDirection
+	number       string
+	endedByModem bool
+	inviteCancel context.CancelFunc
 }
 
 type sipInboundGateway struct {
@@ -131,11 +157,12 @@ type sipInboundGateway struct {
 	localSignalPort int
 	localMediaIP    string
 
-	ua         *sipgo.UserAgent
-	client     *sipgo.Client
-	server     *sipgo.Server
-	listener   io.Closer
-	dialogPool *sipgo.DialogServerCache
+	ua               *sipgo.UserAgent
+	client           *sipgo.Client
+	server           *sipgo.Server
+	listener         io.Closer
+	clientDialogPool *sipgo.DialogClientCache
+	dialogPool       *sipgo.DialogServerCache
 
 	registerCancel context.CancelFunc
 	registerState  string
@@ -165,7 +192,7 @@ func (m *Manager) StartSIPInbound(lineID string, localPort int, hooks SIPInbound
 	if lineID == "" {
 		return errors.New("sip inbound line id is required")
 	}
-	if hooks.ResolveModem == nil || hooks.DialModem == nil {
+	if hooks.ResolveModem == nil || hooks.DialModem == nil || hooks.AnswerModem == nil {
 		return errors.New("sip inbound hooks are incomplete")
 	}
 
@@ -344,6 +371,32 @@ func (m *Manager) SIPConfigForICCID(iccid string) (SIPConfig, bool) {
 	return SIPConfig{}, false
 }
 
+func (m *Manager) SyncModemIncomingSIP(iccid string, target ModemTarget, state ModemIncomingState) error {
+	if m == nil || !m.SIPEnabled() {
+		return errSIPClientDisabled
+	}
+	gateway := m.gatewayByICCID(iccid)
+	if gateway == nil {
+		return nil
+	}
+	return gateway.syncModemState(target, state)
+}
+
+func (m *Manager) gatewayByICCID(iccid string) *sipInboundGateway {
+	if m == nil {
+		return nil
+	}
+	m.sipGatewayMu.Lock()
+	defer m.sipGatewayMu.Unlock()
+	for _, gateway := range m.sipGateways {
+		if gateway == nil || gateway.lineICCID != iccid {
+			continue
+		}
+		return gateway
+	}
+	return nil
+}
+
 func (m *Manager) DialSIP(iccid, number string) error {
 	if m == nil || !m.SIPEnabled() {
 		return errSIPClientDisabled
@@ -479,6 +532,10 @@ func (s *Session) closeSIP(reason string) {
 }
 
 func newSIPInboundGateway(lineID string, manager *Manager, cfg SIPConfig, logger *log.Logger, hooks SIPInboundHooks) (*sipInboundGateway, error) {
+	if hooks.ResolveModem == nil || hooks.DialModem == nil || hooks.AnswerModem == nil {
+		return nil, errors.New("sip inbound hooks are incomplete")
+	}
+
 	transport := normalizeSIPTransport(cfg.Transport)
 	proxyHost, proxyPort, err := parseProxyHostPort(cfg.Proxy, cfg.Port, transport)
 	if err != nil {
@@ -547,27 +604,28 @@ func newSIPInboundGateway(lineID string, manager *Manager, cfg SIPConfig, logger
 	}
 
 	gw := &sipInboundGateway{
-		lineID:          lineID,
-		lineICCID:       strings.TrimSpace(hooks.ICCID),
-		manager:         manager,
-		cfg:             cfg,
-		logger:          logger,
-		hooks:           hooks,
-		transport:       transport,
-		proxyHost:       proxyHost,
-		proxyPort:       proxyPort,
-		proxyAddr:       net.JoinHostPort(proxyHost, strconv.Itoa(proxyPort)),
-		domain:          domain,
-		localSignalHost: localSignalHost,
-		localSignalPort: localSignalPort,
-		localMediaIP:    localMediaIP,
-		ua:              ua,
-		client:          client,
-		server:          server,
-		dialogPool:      sipgo.NewDialogServerCache(client, contact),
-		registerState:   "idle",
-		registerReason:  "init",
-		registerAt:      time.Now(),
+		lineID:           lineID,
+		lineICCID:        strings.TrimSpace(hooks.ICCID),
+		manager:          manager,
+		cfg:              cfg,
+		logger:           logger,
+		hooks:            hooks,
+		transport:        transport,
+		proxyHost:        proxyHost,
+		proxyPort:        proxyPort,
+		proxyAddr:        net.JoinHostPort(proxyHost, strconv.Itoa(proxyPort)),
+		domain:           domain,
+		localSignalHost:  localSignalHost,
+		localSignalPort:  localSignalPort,
+		localMediaIP:     localMediaIP,
+		ua:               ua,
+		client:           client,
+		server:           server,
+		clientDialogPool: sipgo.NewDialogClientCache(client, contact),
+		dialogPool:       sipgo.NewDialogServerCache(client, contact),
+		registerState:    "idle",
+		registerReason:   "init",
+		registerAt:       time.Now(),
 	}
 
 	server.OnInvite(gw.onInvite)
@@ -605,6 +663,8 @@ func sipConfigSignature(cfg SIPConfig) string {
 		normalizeSIPTransport(cfg.Transport),
 		strconv.FormatBool(cfg.TLSSkipVerify),
 		strconv.FormatBool(cfg.Register),
+		strconv.FormatBool(cfg.AcceptIncoming),
+		strings.TrimSpace(cfg.InviteTarget),
 		strconv.Itoa(cfg.RegisterExpires),
 		strings.TrimSpace(cfg.LocalHost),
 		strconv.Itoa(cfg.LocalPort),
@@ -824,30 +884,20 @@ func (g *sipInboundGateway) onInvite(req *sip.Request, tx sip.ServerTransaction)
 		return
 	}
 
+	leg := &sipInboundLeg{
+		iccid:     iccid,
+		direction: sipLegDirectionInboundSIP,
+		number:    number,
+	}
 	var created *sipClientCall
 	call := &sipClientCall{
-		cfg:    g.cfg,
-		logger: g.logger,
-		peer:   s.Peer,
-		bridge: s.Bridge,
+		cfg:             g.cfg,
+		logger:          g.logger,
+		peer:            s.Peer,
+		bridge:          s.Bridge,
+		modemControlled: true,
 		onEnded: func(reason string) {
-			g.mu.Lock()
-			if g.active != nil && g.active.call == created {
-				g.active = nil
-			}
-			g.mu.Unlock()
-
-			s.sipMu.Lock()
-			if s.sipCall == created {
-				s.sipCall = nil
-			}
-			s.sipMu.Unlock()
-
-			s.setCallState("idle", reason)
-
-			if g.hooks.HangupModem != nil {
-				_ = g.hooks.HangupModem(iccid)
-			}
+			g.handleLegEnded(leg, s, created, reason)
 		},
 		localMediaIP: g.localMediaIP,
 		dialogUAS:    dialog,
@@ -855,6 +905,7 @@ func (g *sipInboundGateway) onInvite(req *sip.Request, tx sip.ServerTransaction)
 		rtpSeq:       1,
 	}
 	created = call
+	leg.call = call
 
 	if err := call.openRTPListener(); err != nil {
 		_ = dialog.Respond(sip.StatusServiceUnavailable, "RTP unavailable", nil)
@@ -889,11 +940,8 @@ func (g *sipInboundGateway) onInvite(req *sip.Request, tx sip.ServerTransaction)
 		call.Close("busy")
 		return
 	}
-	g.active = &sipInboundLeg{
-		dialogID: dialog.ID,
-		iccid:    iccid,
-		call:     call,
-	}
+	leg.dialogID = dialog.ID
+	g.active = leg
 	g.mu.Unlock()
 
 	s.setCallState("dialing", "sip_inbound_invite")
@@ -926,23 +974,35 @@ func (g *sipInboundGateway) onAck(req *sip.Request, tx sip.ServerTransaction) {
 }
 
 func (g *sipInboundGateway) onBye(req *sip.Request, tx sip.ServerTransaction) {
-	if g.dialogPool == nil {
-		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusCallTransactionDoesNotExists, "No call", nil))
-		return
-	}
-	if err := g.dialogPool.ReadBye(req, tx); err != nil {
+	leg := g.activeByRequest(req)
+	if leg == nil || leg.call == nil {
 		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusCallTransactionDoesNotExists, "No call", nil))
 		return
 	}
 
-	dialogID, err := sip.DialogIDFromRequestUAS(req)
+	var err error
+	switch leg.direction {
+	case sipLegDirectionInboundSIP:
+		if g.dialogPool == nil {
+			_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusCallTransactionDoesNotExists, "No call", nil))
+			return
+		}
+		err = g.dialogPool.ReadBye(req, tx)
+	case sipLegDirectionModemIncoming:
+		if g.clientDialogPool == nil {
+			_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusCallTransactionDoesNotExists, "No call", nil))
+			return
+		}
+		err = g.clientDialogPool.ReadBye(req, tx)
+	default:
+		err = errSIPInboundNotReady
+	}
 	if err != nil {
+		_ = tx.Respond(sip.NewResponseFromRequest(req, sip.StatusCallTransactionDoesNotExists, "No call", nil))
 		return
 	}
-	leg := g.activeByDialog(dialogID)
-	if leg != nil && leg.call != nil {
-		leg.call.Close("remote_bye")
-	}
+
+	leg.call.Close("remote_bye")
 }
 
 func (g *sipInboundGateway) onInfo(req *sip.Request, tx sip.ServerTransaction) {
@@ -956,11 +1016,7 @@ func (g *sipInboundGateway) onInfo(req *sip.Request, tx sip.ServerTransaction) {
 		return
 	}
 
-	dialogID, err := sip.DialogIDFromRequestUAS(req)
-	if err != nil {
-		return
-	}
-	leg := g.activeByDialog(dialogID)
+	leg := g.activeByRequest(req)
 	if leg == nil || leg.iccid == "" {
 		return
 	}
@@ -970,16 +1026,302 @@ func (g *sipInboundGateway) onInfo(req *sip.Request, tx sip.ServerTransaction) {
 	}
 }
 
-func (g *sipInboundGateway) activeByDialog(dialogID string) *sipInboundLeg {
+func (g *sipInboundGateway) syncModemState(target ModemTarget, state ModemIncomingState) error {
+	active := g.activeLeg()
+	if state.State == "idle" {
+		reason := modemEndReason(state.Reason)
+		ended := false
+		if active != nil {
+			ended = g.endLegFromModem(active, reason)
+		}
+		if !ended {
+			g.endSessionCallFromModem(reason)
+		}
+		return nil
+	}
+
+	if active != nil {
+		return nil
+	}
+	if !g.cfg.AcceptIncoming || strings.TrimSpace(g.cfg.InviteTarget) == "" {
+		return nil
+	}
+	if !state.IncomingRinging || strings.TrimSpace(state.Number) == "" {
+		return nil
+	}
+	if state.Direction != 1 || state.Mode != 0 {
+		return nil
+	}
+
+	return g.startModemIncomingInvite(target, strings.TrimSpace(state.Number))
+}
+
+func (g *sipInboundGateway) startModemIncomingInvite(target ModemTarget, callerNumber string) error {
+	callerNumber = strings.TrimSpace(callerNumber)
+	if callerNumber == "" || !sipDialNumberPattern.MatchString(callerNumber) {
+		return errSIPInvalidNumber
+	}
+
+	iccid := strings.TrimSpace(g.lineICCID)
+	if iccid == "" {
+		iccid = strings.TrimSpace(g.hooks.ICCID)
+	}
+	if iccid == "" {
+		return fmt.Errorf("sip inbound gateway iccid is empty")
+	}
+
+	s := g.manager.GetSession(iccid)
+	var err error
+	if s == nil {
+		s, err = g.manager.EnsureSession(iccid, target)
+		if err != nil {
+			return err
+		}
+	} else {
+		s.Target = target
+	}
+	if err := g.manager.EnsureAudio(iccid); err != nil {
+		return err
+	}
+
+	leg := &sipInboundLeg{
+		iccid:     iccid,
+		direction: sipLegDirectionModemIncoming,
+		number:    callerNumber,
+	}
+	var created *sipClientCall
+	call, err := newGatewaySIPClientCall(g, s, func(reason string) {
+		g.handleLegEnded(leg, s, created, reason)
+	})
+	if err != nil {
+		return err
+	}
+	created = call
+	leg.call = call
+
+	s.sipMu.Lock()
+	if s.sipCall != nil {
+		s.sipMu.Unlock()
+		call.Close("busy")
+		return nil
+	}
+	s.sipCall = call
+	s.sipMu.Unlock()
+
+	inviteTimeout := time.Duration(g.cfg.InviteTimeoutSec) * time.Second
+	if inviteTimeout <= 0 {
+		inviteTimeout = 30 * time.Second
+	}
+	inviteCtx, inviteCancel := context.WithTimeout(context.Background(), inviteTimeout)
+	leg.inviteCancel = inviteCancel
+
+	g.mu.Lock()
+	if g.active != nil {
+		g.mu.Unlock()
+		inviteCancel()
+		s.sipMu.Lock()
+		if s.sipCall == call {
+			s.sipCall = nil
+		}
+		s.sipMu.Unlock()
+		call.Close("busy")
+		return nil
+	}
+	g.active = leg
+	g.mu.Unlock()
+
+	s.setCallState("dialing", "modem_incoming_invite")
+
+	go func() {
+		defer inviteCancel()
+		err := call.DialIncomingCall(g.cfg.InviteTarget, callerNumber, inviteCtx, func() {
+			g.mu.Lock()
+			if g.active == leg {
+				leg.inviteCancel = nil
+				if call.dialog != nil {
+					leg.dialogID = call.dialog.ID
+				}
+			}
+			g.mu.Unlock()
+		}, func() error {
+			return g.hooks.AnswerModem(iccid)
+		})
+		if err != nil {
+			call.Close(classifyInviteFailure(err))
+			return
+		}
+
+		g.mu.Lock()
+		stillActive := g.active == leg
+		g.mu.Unlock()
+		if stillActive {
+			s.setCallState("in_call", "modem_incoming_connected")
+		}
+	}()
+
+	return nil
+}
+
+func newGatewaySIPClientCall(g *sipInboundGateway, session *Session, onEnded func(reason string)) (*sipClientCall, error) {
+	if session == nil || session.Bridge == nil {
+		return nil, errSIPAudioNotReady
+	}
+
+	cfg := g.cfg
+	cfg.Register = false
+	return &sipClientCall{
+		cfg:             cfg,
+		logger:          g.logger,
+		peer:            session.Peer,
+		bridge:          session.Bridge,
+		modemControlled: true,
+		onEnded:         onEnded,
+		transport:       g.transport,
+		proxyHost:       g.proxyHost,
+		proxyPort:       g.proxyPort,
+		proxyAddr:       g.proxyAddr,
+		domain:          g.domain,
+		localSignalHost: g.localSignalHost,
+		localSignalPort: g.localSignalPort,
+		localMediaIP:    g.localMediaIP,
+		dialogPool:      g.clientDialogPool,
+		rtpSSRC:         rand.Uint32(),
+		rtpSeq:          1,
+	}, nil
+}
+
+func (g *sipInboundGateway) handleLegEnded(leg *sipInboundLeg, session *Session, call *sipClientCall, reason string) {
+	shouldHangupModem := false
+
+	g.mu.Lock()
+	if g.active == leg {
+		g.active = nil
+	}
+	if leg.inviteCancel != nil {
+		leg.inviteCancel()
+		leg.inviteCancel = nil
+	}
+	shouldHangupModem = !leg.endedByModem
+	g.mu.Unlock()
+
+	if session != nil {
+		session.sipMu.Lock()
+		if session.sipCall == call {
+			session.sipCall = nil
+		}
+		session.sipMu.Unlock()
+		session.setCallState("idle", reason)
+	}
+
+	if shouldHangupModem && g.hooks.HangupModem != nil {
+		_ = g.hooks.HangupModem(leg.iccid)
+	}
+}
+
+func (g *sipInboundGateway) activeLeg() *sipInboundLeg {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.active
+}
+
+func (g *sipInboundGateway) activeByRequest(req *sip.Request) *sipInboundLeg {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.active == nil {
 		return nil
 	}
-	if g.active.dialogID != dialogID {
+
+	var dialogID string
+	var err error
+	switch g.active.direction {
+	case sipLegDirectionInboundSIP:
+		dialogID, err = sip.DialogIDFromRequestUAS(req)
+	case sipLegDirectionModemIncoming:
+		dialogID, err = sip.DialogIDFromRequestUAC(req)
+		if err == nil && g.active.call != nil && g.active.call.dialog != nil && g.active.call.dialog.ID != "" {
+			if g.active.call.dialog.ID == dialogID {
+				return g.active
+			}
+		}
+	default:
+		return nil
+	}
+	if err != nil || g.active.dialogID != dialogID {
 		return nil
 	}
 	return g.active
+}
+
+func (g *sipInboundGateway) endLegFromModem(leg *sipInboundLeg, reason string) bool {
+	if leg == nil || leg.call == nil {
+		return false
+	}
+
+	g.mu.Lock()
+	if g.active != leg {
+		g.mu.Unlock()
+		return false
+	}
+	leg.endedByModem = true
+	cancel := leg.inviteCancel
+	g.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+		return true
+	}
+	_ = leg.call.HangupWithReason(reason)
+	return true
+}
+
+func (g *sipInboundGateway) endSessionCallFromModem(reason string) {
+	if g == nil || g.manager == nil {
+		return
+	}
+	iccid := strings.TrimSpace(g.lineICCID)
+	if iccid == "" {
+		iccid = strings.TrimSpace(g.hooks.ICCID)
+	}
+	if iccid == "" {
+		return
+	}
+
+	s := g.manager.GetSession(iccid)
+	if s == nil {
+		return
+	}
+
+	s.sipMu.Lock()
+	call := s.sipCall
+	s.sipMu.Unlock()
+	if call == nil || !call.modemControlled {
+		return
+	}
+
+	g.logger.Printf("[%s] modem ended call, sending SIP BYE (%s)", iccid, reason)
+	_ = call.HangupWithReason(reason)
+}
+
+func modemEndReason(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return "modem_hangup"
+	}
+	return "modem_" + reason
+}
+
+func classifyInviteFailure(err error) string {
+	if err == nil {
+		return "invite_error"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "invite_cancelled"
+	}
+	var dialogErr *sipgo.ErrDialogResponse
+	if errors.As(err, &dialogErr) && dialogErr.Res != nil {
+		return fmt.Sprintf("invite_%d", dialogErr.Res.StatusCode)
+	}
+	return "invite_error"
 }
 
 func newSIPClientCall(cfg SIPConfig, logger *log.Logger, session *Session, onEnded func(reason string)) (*sipClientCall, error) {
@@ -1106,13 +1448,57 @@ func (c *sipClientCall) Dial(number string, inviteTimeout time.Duration) error {
 		return errSIPInvalidNumber
 	}
 
+	recipient := sip.Uri{
+		Scheme: "sip",
+		User:   number,
+		Host:   c.domain,
+	}
+	recipient.UriParams = sip.NewParams()
+	recipient.UriParams.Add("transport", c.transport)
+
+	ctx, cancel := context.WithTimeout(context.Background(), inviteTimeout)
+	defer cancel()
+	return c.dialTarget(ctx, recipient, nil, nil, nil, nil)
+}
+
+func (c *sipClientCall) DialIncomingCall(inviteTarget, callerNumber string, ctx context.Context, onEstablished func(), onAccepted func() error) error {
+	inviteTarget = strings.TrimSpace(inviteTarget)
+	callerNumber = strings.TrimSpace(callerNumber)
+	if callerNumber == "" || !sipDialNumberPattern.MatchString(callerNumber) {
+		return errSIPInvalidNumber
+	}
+
+	recipient, err := buildInviteTargetURI(inviteTarget, c.domain, c.transport)
+	if err != nil {
+		return err
+	}
+
+	fromUser := strings.TrimSpace(c.cfg.Username)
+	if fromUser == "" {
+		return errors.New("sip username is required for incoming call identity")
+	}
+
+	from := &sip.FromHeader{
+		Address: sip.Uri{
+			Scheme: "sip",
+			User:   fromUser,
+			Host:   c.domain,
+		},
+		Params: sip.NewParams(),
+	}
+	from.Params.Add("tag", sip.GenerateTagN(16))
+	extraHeaders := buildIncomingCallerIdentityHeaders(callerNumber, c.domain)
+	return c.dialTarget(ctx, recipient, from, extraHeaders, onEstablished, onAccepted)
+}
+
+func (c *sipClientCall) dialTarget(ctx context.Context, recipient sip.Uri, from *sip.FromHeader, extraHeaders []sip.Header, onEstablished func(), onAccepted func() error) error {
 	if err := c.openRTPListener(); err != nil {
 		return err
 	}
 
 	if c.cfg.Register {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		err := c.register(ctx)
+		regCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := c.register(regCtx)
 		cancel()
 		if err != nil {
 			return err
@@ -1124,23 +1510,7 @@ func (c *sipClientCall) Dial(number string, inviteTimeout time.Duration) error {
 		return err
 	}
 
-	recipient := sip.Uri{
-		Scheme: "sip",
-		User:   number,
-		Host:   c.domain,
-	}
-	recipient.UriParams = sip.NewParams()
-	recipient.UriParams.Add("transport", c.transport)
-
-	req := sip.NewRequest(sip.INVITE, recipient)
-	req.SetTransport(strings.ToUpper(c.transport))
-	req.SetDestination(c.proxyAddr)
-	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
-	req.SetBody([]byte(localSDP))
-
-	ctx, cancel := context.WithTimeout(context.Background(), inviteTimeout)
-	defer cancel()
-
+	req := c.newInviteRequest(recipient, localSDP, from, extraHeaders)
 	dialog, err := c.dialogPool.WriteInvite(ctx, req)
 	if err != nil {
 		return err
@@ -1154,12 +1524,17 @@ func (c *sipClientCall) Dial(number string, inviteTimeout time.Duration) error {
 	if err != nil {
 		return err
 	}
-	if err := dialog.Ack(ctx); err != nil {
+
+	ackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := dialog.Ack(ackCtx); err != nil {
+		cancel()
 		return err
 	}
+	cancel()
 
 	remoteAddr, payloadType, codec, err := parseRemoteSDP(dialog.InviteResponse.Body())
 	if err != nil {
+		_ = c.HangupWithReason("remote_sdp_error")
 		return err
 	}
 
@@ -1167,22 +1542,119 @@ func (c *sipClientCall) Dial(number string, inviteTimeout time.Duration) error {
 	c.rtpPayloadType = payloadType
 	c.rtpCodec = codec
 
+	if onEstablished != nil {
+		onEstablished()
+	}
+
+	if onAccepted != nil {
+		if err := onAccepted(); err != nil {
+			_ = c.HangupWithReason("accept_error")
+			return err
+		}
+	}
+
 	go c.readRTPToLocal()
 	return nil
 }
 
+func (c *sipClientCall) newInviteRequest(recipient sip.Uri, localSDP string, from *sip.FromHeader, extraHeaders []sip.Header) *sip.Request {
+	req := sip.NewRequest(sip.INVITE, recipient)
+	req.SetTransport(strings.ToUpper(c.transport))
+	req.SetDestination(c.proxyAddr)
+	if from != nil {
+		req.AppendHeader(from)
+	}
+	for _, header := range extraHeaders {
+		if header != nil {
+			req.AppendHeader(header)
+		}
+	}
+	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	req.SetBody([]byte(localSDP))
+	return req
+}
+
+func buildIncomingCallerIdentityHeaders(callerNumber, domain string) []sip.Header {
+	callerNumber = strings.TrimSpace(callerNumber)
+	domain = strings.TrimSpace(domain)
+	if callerNumber == "" || domain == "" {
+		return nil
+	}
+
+	identityURI := sip.Uri{
+		Scheme: "sip",
+		User:   callerNumber,
+		Host:   domain,
+	}
+	identityURI.UriParams = sip.NewParams()
+	identityURI.UriParams.Add("user", "phone")
+	identityValue := "<" + identityURI.String() + ">"
+
+	return []sip.Header{
+		sip.NewHeader("P-Asserted-Identity", identityValue),
+		sip.NewHeader("Remote-Party-ID", identityValue+";party=calling;screen=yes;privacy=off"),
+	}
+}
+
+func buildInviteTargetURI(target, defaultHost, transport string) (sip.Uri, error) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return sip.Uri{}, errors.New("invite target is required")
+	}
+
+	raw := target
+	if !strings.Contains(raw, ":") {
+		if strings.Contains(raw, "@") {
+			raw = "sip:" + raw
+		} else {
+			raw = "sip:" + raw + "@" + defaultHost
+		}
+	} else if !strings.HasPrefix(strings.ToLower(raw), "sip:") && !strings.HasPrefix(strings.ToLower(raw), "sips:") {
+		if strings.Contains(raw, "@") {
+			raw = "sip:" + raw
+		}
+	}
+
+	var uri sip.Uri
+	if err := sip.ParseUri(raw, &uri); err != nil {
+		return sip.Uri{}, fmt.Errorf("invalid invite target: %w", err)
+	}
+	if uri.Scheme == "" {
+		uri.Scheme = "sip"
+	}
+	if uri.Host == "" {
+		uri.Host = defaultHost
+	}
+	if uri.UriParams == nil {
+		uri.UriParams = sip.NewParams()
+	}
+	if _, ok := uri.UriParams.Get("transport"); !ok {
+		uri.UriParams.Add("transport", transport)
+	}
+	return uri, nil
+}
+
 func (c *sipClientCall) Hangup() error {
+	return c.HangupWithReason("hangup")
+}
+
+func (c *sipClientCall) HangupWithReason(reason string) error {
 	var hangErr error
 	if c.dialog != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		c.logger.Printf("sending SIP BYE (%s)", reason)
 		hangErr = c.dialog.Bye(ctx)
 		cancel()
 	} else if c.dialogUAS != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		c.logger.Printf("sending SIP BYE (%s)", reason)
 		hangErr = c.dialogUAS.Bye(ctx)
 		cancel()
 	}
-	c.Close("hangup")
+	if hangErr != nil && c.logger != nil {
+		c.logger.Printf("sip BYE failed (%s): %v", reason, hangErr)
+	}
+	c.Close(reason)
 	return hangErr
 }
 

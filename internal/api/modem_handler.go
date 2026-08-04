@@ -481,11 +481,6 @@ func (h *ModemHandler) ScanNetworks(c *gin.Context) {
 		return
 	}
 
-	if w.IsBusy() {
-		c.JSON(http.StatusConflict, gin.H{"error": "Modem is busy"})
-		return
-	}
-
 	networks, err := w.ScanNetworks()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Scan failed: " + err.Error()})
@@ -519,11 +514,6 @@ func (h *ModemHandler) SetOperator(c *gin.Context) {
 	w := h.wm.GetWorkerByICCID(iccid)
 	if w == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Modem not active (worker not found)"})
-		return
-	}
-
-	if w.IsBusy() {
-		c.JSON(http.StatusConflict, gin.H{"error": "Modem is busy"})
 		return
 	}
 
@@ -565,17 +555,6 @@ func (h *ModemHandler) executeCommand(c *gin.Context, timeout time.Duration) {
 		return
 	}
 
-	// For simple AT commands, we set occupied to prevent polling overlap
-	// But if we are in input mode (waiting for >), we need to allow continuation.
-	// The worker's IsBusy handles simple locking.
-	// We might want to EXPLICITLY set/unset occupied if this is a complex flow?
-	// User asked to "avoid colliding with polling".
-	// Simple ExecuteAT handles one command.
-	// If the user wants to type commands manually, they might want to "Open Session".
-	// But sticking to the stateless API request:
-	w.SetOccupied(true)
-	defer w.SetOccupied(false)
-
 	if req.Timeout > 0 {
 		timeout = time.Duration(req.Timeout) * time.Millisecond
 	}
@@ -616,11 +595,6 @@ func (h *ModemHandler) SendSMS(c *gin.Context) {
 	w := h.wm.GetWorkerByICCID(iccid)
 	if w == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Modem not active (worker not found)"})
-		return
-	}
-
-	if w.IsBusy() {
-		c.JSON(http.StatusConflict, gin.H{"error": "Modem is busy"})
 		return
 	}
 

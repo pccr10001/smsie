@@ -30,12 +30,13 @@ type ModemWorker struct {
 	stopOnce sync.Once
 
 	// Command handling
-	cmdChan    chan commandRequest
-	currentCmd *commandRequest
-	mu         sync.Mutex // protects access to port write if needed
+	transactionChan chan atTransaction
 
-	busyMu sync.Mutex
-	busy   bool
+	busyMu    sync.Mutex
+	busy      bool
+	modemMu   sync.RWMutex
+	reprobeMu sync.Mutex
+	reprobe   bool
 
 	callOpMu sync.Mutex
 	callMu   sync.RWMutex
@@ -60,14 +61,6 @@ type ModemWorker struct {
 type rxMsg struct {
 	Data string
 	Err  error
-}
-
-type commandRequest struct {
-	cmd      string
-	respChan chan string
-	errChan  chan error
-	timeout  time.Duration
-	silent   bool
 }
 
 type callSnapshot struct {
@@ -98,15 +91,15 @@ var dialNumberPattern = regexp.MustCompile(`^[0-9*#+]+$`)
 
 func NewModemWorker(portName string, db *gorm.DB, manager *Manager) *ModemWorker {
 	return &ModemWorker{
-		PortName:       portName,
-		stop:           make(chan struct{}),
-		cmdChan:        make(chan commandRequest, 10),
-		repo:           repository.NewModemRepository(db),
-		smsRepo:        repository.NewSMSRepository(db),
-		webhookService: logic.NewWebhookService(repository.NewWebhookRepository(db)),
-		manager:        manager,
-		rxChan:         make(chan rxMsg, 100), // Buffer to prevent blocking reader
-		triggerChan:    make(chan struct{}, 1),
+		PortName:        portName,
+		stop:            make(chan struct{}),
+		transactionChan: make(chan atTransaction, 10),
+		repo:            repository.NewModemRepository(db),
+		smsRepo:         repository.NewSMSRepository(db),
+		webhookService:  logic.NewWebhookService(repository.NewWebhookRepository(db)),
+		manager:         manager,
+		rxChan:          make(chan rxMsg, 100), // Buffer to prevent blocking reader
+		triggerChan:     make(chan struct{}, 1),
 		call: callSnapshot{
 			State:     callStateIdle,
 			Reason:    "init",
@@ -134,6 +127,8 @@ func (w *ModemWorker) runLoop() {
 	w.port, err = serial.Open(w.PortName, mode)
 	if err != nil {
 		logger.Log.Errorf("Failed to open port %s: %v", w.PortName, err)
+		w.requestReprobe()
+		w.Stop()
 		return
 	}
 	defer w.port.Close()
@@ -153,72 +148,14 @@ func (w *ModemWorker) runLoop() {
 			logger.Log.Infof("Worker for %s stopped", w.PortName)
 			return
 
-		case req := <-w.cmdChan:
-			// Execute Command
-			w.currentCmd = &req
-			if !req.silent {
-				logger.Log.Debugf("[%s] TX: %s", w.PortName, req.cmd)
-			}
-			payload := req.cmd + "\r"
-			if strings.HasSuffix(req.cmd, "\x1A") || strings.HasSuffix(req.cmd, "\x1B") {
-				payload = req.cmd
-			}
-			if _, err := w.port.Write([]byte(payload)); err != nil {
-				req.errChan <- err
-				w.currentCmd = nil
-				continue
-			}
-
-			// Wait for response with timeout
-			fullResponse := []string{}
-			timeoutTimer := time.NewTimer(req.timeout)
-
-			// Inner loop for reading response (from rxChan)
-		RespLoop:
-			for {
-				select {
-				case <-timeoutTimer.C:
-					req.errChan <- errors.New("timeout")
-					break RespLoop
-
-				case msg := <-w.rxChan:
-					if msg.Err != nil {
-						req.errChan <- msg.Err
-						logger.Log.Errorf("[%s] Port read error during cmd: %v. Stopping.", w.PortName, msg.Err)
-						w.Stop()
-						return
-					}
-
-					line := msg.Data
-					if !req.silent {
-						logger.Log.Debugf("[%s] RX: %s", w.PortName, line)
-					}
-					fullResponse = append(fullResponse, line)
-
-					if line == "OK" {
-						req.respChan <- strings.Join(fullResponse, "\n")
-						break RespLoop
-					} else if strings.Contains(line, "ERROR") {
-						req.errChan <- fmt.Errorf("modem error: %s", strings.Join(fullResponse, "\n"))
-						break RespLoop
-					} else if strings.HasPrefix(line, ">") {
-						if strings.HasPrefix(req.cmd, "AT+CMGS=") {
-							req.respChan <- line
-							break RespLoop
-						}
-						continue
-					} else if w.isURC(line) {
-						w.handleURC(line)
-					}
-				}
-			}
-			timeoutTimer.Stop()
-			w.currentCmd = nil // Ready for next command
+		case tx := <-w.transactionChan:
+			w.executeTransaction(tx)
 
 		case msg := <-w.rxChan:
 			// Idle processing
 			if msg.Err != nil {
 				logger.Log.Errorf("[%s] Port read error (idle): %v. Stopping.", w.PortName, msg.Err)
+				w.requestReprobe()
 				w.Stop()
 				return
 			}
@@ -229,6 +166,14 @@ func (w *ModemWorker) runLoop() {
 			}
 		}
 	}
+}
+
+func (w *ModemWorker) executeTransaction(tx atTransaction) {
+	w.SetBusy(true)
+	err := tx.run(&atSession{worker: w})
+	w.SetBusy(false)
+	// A caller may have disconnected. Never let that block serial I/O.
+	tx.done <- err
 }
 
 // dedicated read loop
@@ -276,6 +221,7 @@ func (w *ModemWorker) readLoop() {
 			}
 
 			// Real Error
+			w.requestReprobe()
 			w.rxChan <- rxMsg{Err: err}
 			return
 		}
@@ -321,6 +267,18 @@ func (w *ModemWorker) IsStopped() bool {
 	default:
 		return false
 	}
+}
+
+func (w *ModemWorker) requestReprobe() {
+	w.reprobeMu.Lock()
+	w.reprobe = true
+	w.reprobeMu.Unlock()
+}
+
+func (w *ModemWorker) needsReprobe() bool {
+	w.reprobeMu.Lock()
+	defer w.reprobeMu.Unlock()
+	return w.reprobe
 }
 
 func (w *ModemWorker) initModem() {
@@ -494,7 +452,7 @@ func (w *ModemWorker) initModem() {
 		if err := w.repo.Upsert(persist); err != nil {
 			logger.Log.Errorf("Failed to save modem %s: %v", iccid, err)
 		} else {
-			w.modem = modem
+			w.setModem(modem)
 			logger.Log.Infof("Modem registered: %s (%s) Op: %s Sig: %d%%", iccid, w.PortName, operator, signal)
 		}
 
@@ -510,47 +468,6 @@ func parseID(resp, prefix string) string {
 		}
 	}
 	return ""
-}
-
-func (w *ModemWorker) ExecuteAT(cmd string, timeout time.Duration) (string, error) {
-	respChan := make(chan string)
-	errChan := make(chan error)
-	w.cmdChan <- commandRequest{
-		cmd:      cmd,
-		respChan: respChan,
-		errChan:  errChan,
-		timeout:  timeout,
-	}
-
-	select {
-	case resp := <-respChan:
-		return resp, nil
-	case err := <-errChan:
-		return "", err
-	case <-time.After(timeout + 1*time.Second): // Safety buffer
-		return "", errors.New("command enqueue timeout")
-	}
-}
-
-func (w *ModemWorker) ExecuteATSilent(cmd string, timeout time.Duration) (string, error) {
-	respChan := make(chan string)
-	errChan := make(chan error)
-	w.cmdChan <- commandRequest{
-		cmd:      cmd,
-		respChan: respChan,
-		errChan:  errChan,
-		timeout:  timeout,
-		silent:   true,
-	}
-
-	select {
-	case resp := <-respChan:
-		return resp, nil
-	case err := <-errChan:
-		return "", err
-	case <-time.After(timeout + 1*time.Second): // Safety buffer
-		return "", errors.New("command enqueue timeout")
-	}
 }
 
 func (w *ModemWorker) isURC(line string) bool {
@@ -583,14 +500,14 @@ func (w *ModemWorker) handleURC(line string) {
 		code, text, err := parseCREGStatus(line)
 		if err != nil {
 			logger.Log.Warnf("[%s] Failed to parse CREG URC: %q: %v", w.PortName, line, err)
-		} else if w.modem == nil {
-			logger.Log.Debugf("[%s] Ignore CREG URC before modem init: %s", w.PortName, line)
-		} else {
-			w.modem.Registration = text
+		} else if !w.updateModem(func(modem *model.Modem) {
+			modem.Registration = text
 			if code != "1" && code != "5" {
-				w.modem.Operator = ""
+				modem.Operator = ""
 			}
-			w.modem.LastSeen = time.Now()
+			modem.LastSeen = time.Now()
+		}) {
+			logger.Log.Debugf("[%s] Ignore CREG URC before modem init: %s", w.PortName, line)
 		}
 	}
 
@@ -837,11 +754,19 @@ func (w *ModemWorker) Dial(number string) error {
 		return errCallInProgress
 	}
 
-	w.SetBusy(true)
-	defer w.SetBusy(false)
-
-	if _, err := w.ExecuteAT(`AT+QPCMV=1,2`, 5*time.Second); err != nil {
-		return fmt.Errorf("enable UAC voice failed: %w", err)
+	err := w.runATTransaction(func(session *atSession) error {
+		if _, err := session.execute(`AT+QPCMV=1,2`, 5*time.Second, false); err != nil {
+			return fmt.Errorf("enable UAC voice failed: %w", err)
+		}
+		if _, err := session.execute("ATD"+number+";", 15*time.Second, false); err != nil {
+			_, _ = session.execute(`AT+QPCMV=0`, 3*time.Second, true)
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		w.setCallStateWithMeta(callStateIdle, "dial_error", clearCallDetails)
+		return err
 	}
 
 	w.setCallStateWithMeta(callStateDialing, "dial", func(snapshot *callSnapshot) {
@@ -852,11 +777,6 @@ func (w *ModemWorker) Dial(number string) error {
 		snapshot.Mode = 0
 		snapshot.Voice = true
 	})
-	if _, err := w.ExecuteAT("ATD"+number+";", 15*time.Second); err != nil {
-		_, _ = w.ExecuteATSilent(`AT+QPCMV=0`, 3*time.Second)
-		w.setCallStateWithMeta(callStateIdle, "dial_error", clearCallDetails)
-		return err
-	}
 
 	w.setCallStateWithMeta(callStateInCall, "dial_ok", func(snapshot *callSnapshot) {
 		snapshot.Stat = 0
@@ -880,14 +800,17 @@ func (w *ModemWorker) Answer() error {
 		return errors.New("no incoming call to answer")
 	}
 
-	w.SetBusy(true)
-	defer w.SetBusy(false)
-
-	if _, err := w.ExecuteAT(`AT+QPCMV=1,2`, 5*time.Second); err != nil {
-		return fmt.Errorf("enable UAC voice failed: %w", err)
-	}
-	if _, err := w.ExecuteAT("ATA", 15*time.Second); err != nil {
-		_, _ = w.ExecuteATSilent(`AT+QPCMV=0`, 3*time.Second)
+	err := w.runATTransaction(func(session *atSession) error {
+		if _, err := session.execute(`AT+QPCMV=1,2`, 5*time.Second, false); err != nil {
+			return fmt.Errorf("enable UAC voice failed: %w", err)
+		}
+		if _, err := session.execute("ATA", 15*time.Second, false); err != nil {
+			_, _ = session.execute(`AT+QPCMV=0`, 3*time.Second, true)
+			return err
+		}
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 
@@ -916,13 +839,16 @@ func (w *ModemWorker) Hangup() error {
 		return nil
 	}
 
-	w.SetBusy(true)
-	defer w.SetBusy(false)
-
-	if _, err := w.ExecuteAT("ATH", 10*time.Second); err != nil {
+	err := w.runATTransaction(func(session *atSession) error {
+		if _, err := session.execute("ATH", 10*time.Second, false); err != nil {
+			return err
+		}
+		_, _ = session.execute(`AT+QPCMV=0`, 3*time.Second, true)
+		return nil
+	})
+	if err != nil {
 		return err
 	}
-	_, _ = w.ExecuteATSilent(`AT+QPCMV=0`, 3*time.Second)
 
 	w.setCallStateWithMeta(callStateIdle, "hangup", clearCallDetails)
 	return nil
@@ -1025,18 +951,10 @@ func parseHexOrInt(s string) (int64, error) {
 func (w *ModemWorker) IsBusy() bool {
 	w.busyMu.Lock()
 	defer w.busyMu.Unlock()
-	return w.busy
-}
-
-// SetOccupied prevents the polling loop from running while Manual AT commands are active
-func (w *ModemWorker) SetOccupied(occupied bool) {
-	w.SetBusy(occupied)
+	return w.busy || len(w.transactionChan) > 0
 }
 
 func (w *ModemWorker) ScanNetworks() ([]string, error) {
-	w.SetBusy(true)
-	defer w.SetBusy(false)
-
 	// Long timeout for network scan
 	// AT+COPS=? resp example: +COPS: (2,"Chunghwa Telecom","CHT","46692",7),(1,"Far EasTone","FET","46601",7),,,(0-4),(0-2)
 	resp, err := w.ExecuteAT("AT+COPS=?", 120*time.Second)
@@ -1122,9 +1040,6 @@ func (w *ModemWorker) ScanNetworks() ([]string, error) {
 }
 
 func (w *ModemWorker) SetOperator(oper string) error {
-	w.SetBusy(true)
-	defer w.SetBusy(false)
-
 	// Format: AT+COPS=1,0,"oper" (Manual, alphanumeric)
 	// Or auto: AT+COPS=0
 	cmd := "AT+COPS=0"
@@ -1138,10 +1053,7 @@ func (w *ModemWorker) SetOperator(oper string) error {
 
 // SendSMS sends an SMS message using PDU format
 func (w *ModemWorker) SendSMS(phoneNumber, message string) error {
-	w.SetBusy(true)
-	defer w.SetBusy(false)
-
-	if w.modem == nil {
+	if _, ok := w.modemSnapshot(); !ok {
 		return errors.New("modem not initialized")
 	}
 
@@ -1154,10 +1066,6 @@ func (w *ModemWorker) SendSMS(phoneNumber, message string) error {
 		return errors.New("message is required")
 	}
 
-	if _, err := w.ExecuteAT("AT+CMGF=0", 5*time.Second); err != nil {
-		return fmt.Errorf("failed to set PDU mode: %w", err)
-	}
-
 	// Encode the SMS to PDU format using warthog618/sms library
 	// We need to create a SUBMIT TPDU (Mobile Originated)
 	tpdus, err := sms.Encode([]byte(message), sms.AsSubmit, sms.To(phoneNumber))
@@ -1167,70 +1075,64 @@ func (w *ModemWorker) SendSMS(phoneNumber, message string) error {
 
 	logger.Log.Infof("[%s] Sending SMS to %s: %s (PDUs: %d)", w.PortName, phoneNumber, message, len(tpdus))
 
-	// Send each PDU segment
-	for i, t := range tpdus {
-		// Marshal TPDU to bytes (without SMSC address)
-		pduBytes, err := t.MarshalBinary()
-		if err != nil {
-			return fmt.Errorf("failed to marshal PDU %d: %w", i+1, err)
+	return w.runATTransaction(func(session *atSession) error {
+		if _, err := session.execute("AT+CMGF=0", 5*time.Second, false); err != nil {
+			return fmt.Errorf("failed to set PDU mode: %w", err)
 		}
 
-		// Create PDU with empty SMSC (let modem use default)
-		// SMSC length = 0 means use modem's default SMSC
-		fullPDU := append([]byte{0x00}, pduBytes...)
-		pduHex := strings.ToUpper(hex.EncodeToString(fullPDU))
+		// Send each PDU segment without releasing the modem transaction.
+		for i, t := range tpdus {
+			// Marshal TPDU to bytes (without SMSC address)
+			pduBytes, err := t.MarshalBinary()
+			if err != nil {
+				return fmt.Errorf("failed to marshal PDU %d: %w", i+1, err)
+			}
 
-		// Length for AT+CMGS is the TPDU length excluding SMSC (in bytes)
-		tpduLen := len(pduBytes)
-		pduCmd := pduHex + "\x1A"
+			// Create PDU with empty SMSC (let modem use default)
+			// SMSC length = 0 means use modem's default SMSC
+			fullPDU := append([]byte{0x00}, pduBytes...)
+			pduHex := strings.ToUpper(hex.EncodeToString(fullPDU))
 
-		logger.Log.Debugf("[%s] PDU %d/%d: len=%d, hex=%s", w.PortName, i+1, len(tpdus), tpduLen, pduHex)
+			// Length for AT+CMGS is the TPDU length excluding SMSC (in bytes)
+			tpduLen := len(pduBytes)
+			pduCmd := pduHex + "\x1A"
 
-		// Step 1: Send AT+CMGS=<length> and wait for ">" prompt
-		cmd := fmt.Sprintf("AT+CMGS=%d", tpduLen)
-		resp, err := w.ExecuteAT(cmd, 20*time.Second)
-		promptReady := false
-		if err == nil && strings.Contains(resp, ">") {
-			promptReady = true
-		}
+			logger.Log.Debugf("[%s] PDU %d/%d: len=%d, hex=%s", w.PortName, i+1, len(tpdus), tpduLen, pduHex)
 
-		if err != nil {
-			errText := strings.ToLower(err.Error())
-			if strings.Contains(errText, "timeout") {
-				logger.Log.Warnf("[%s] CMGS prompt timeout, trying blind PDU submit", w.PortName)
-			} else {
+			// Step 1: Send AT+CMGS=<length> and wait for ">" prompt
+			cmd := fmt.Sprintf("AT+CMGS=%d", tpduLen)
+			resp, err := session.execute(cmd, 20*time.Second, false)
+			if err != nil {
 				return fmt.Errorf("AT+CMGS failed: %w", err)
 			}
-		} else if !promptReady {
-			logger.Log.Warnf("[%s] CMGS prompt not parsed (%q), trying blind PDU submit", w.PortName, resp)
+			if !strings.Contains(resp, ">") {
+				return fmt.Errorf("AT+CMGS did not return prompt: %s", resp)
+			}
+
+			// Step 2: Send PDU hex followed by Ctrl+Z (0x1A)
+			resp, err = session.execute(pduCmd, 60*time.Second, false)
+			if err != nil {
+				_, _ = session.execute("\x1A", 2*time.Second, true)
+				return fmt.Errorf("failed to send PDU: %w", err)
+			}
+
+			// Check for +CMGS: <mr> response indicating success
+			if !strings.Contains(resp, "+CMGS:") {
+				return fmt.Errorf("SMS send failed, response: %s", resp)
+			}
+
+			logger.Log.Infof("[%s] PDU %d/%d sent successfully", w.PortName, i+1, len(tpdus))
 		}
 
-		// Step 2: Send PDU hex followed by Ctrl+Z (0x1A)
-		resp, err = w.ExecuteAT(pduCmd, 60*time.Second)
-		if err != nil {
-			_, _ = w.ExecuteATSilent("\x1A", 2*time.Second)
-			return fmt.Errorf("failed to send PDU: %w", err)
-		}
-
-		// Check for +CMGS: <mr> response indicating success
-		if !strings.Contains(resp, "+CMGS:") {
-			return fmt.Errorf("SMS send failed, response: %s", resp)
-		}
-
-		logger.Log.Infof("[%s] PDU %d/%d sent successfully", w.PortName, i+1, len(tpdus))
-	}
-
-	logger.Log.Infof("[%s] SMS sent successfully to %s", w.PortName, phoneNumber)
-	return nil
+		logger.Log.Infof("[%s] SMS sent successfully to %s", w.PortName, phoneNumber)
+		return nil
+	})
 }
 
 func (w *ModemWorker) Reboot() error {
 	if !callingEnabled() {
 		return errors.New("calling disabled in this build")
 	}
-
-	w.SetBusy(true)
-	defer w.SetBusy(false)
 
 	w.setCallState(callStateIdle, "reboot")
 	w.setUACReady(false)

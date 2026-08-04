@@ -101,14 +101,7 @@ func (m *Manager) ScanAndManage() {
 	}
 
 	// 2. Cleanup stopped workers so APIs won't route to dead workers.
-	// Keep port in probed cache while still present to avoid repetitive probing
-	// on non-AT sibling ports of the same modem.
-	for p, w := range m.workers {
-		if w.IsStopped() {
-			logger.Log.Warnf("Worker on %s stopped. Removing active worker entry.", p)
-			m.unregisterWorkerLocked(p, w)
-		}
-	}
+	m.cleanupStoppedWorkersLocked()
 
 	// 3. Probe only unprobed ports (newly appeared or previously removed).
 	for p := range validPorts {
@@ -124,14 +117,30 @@ func (m *Manager) ScanAndManage() {
 	}
 }
 
+func (m *Manager) cleanupStoppedWorkersLocked() {
+	for p, w := range m.workers {
+		if !w.IsStopped() {
+			continue
+		}
+
+		logger.Log.Warnf("Worker on %s stopped. Removing active worker entry.", p)
+		m.unregisterWorkerLocked(p, w)
+		if w.needsReprobe() {
+			// A disconnect can reappear with the same tty name between scans.
+			delete(m.probedPorts, p)
+			logger.Log.Infof("Port %s re-armed for probing after serial I/O disconnect", p)
+		}
+	}
+}
+
 func (m *Manager) unregisterWorkerLocked(port string, w *ModemWorker) {
 	delete(m.workers, port)
 	if w == nil {
 		return
 	}
 
-	if w.modem != nil && w.modem.ICCID != "" {
-		delete(m.activeICCIDs, w.modem.ICCID)
+	if modem, ok := w.modemSnapshot(); ok && modem.ICCID != "" {
+		delete(m.activeICCIDs, modem.ICCID)
 	}
 }
 
@@ -140,7 +149,7 @@ func (m *Manager) RemoveWorkerByICCID(iccid string) bool {
 	defer m.mu.Unlock()
 
 	for port, w := range m.workers {
-		if w == nil || w.modem == nil || w.modem.ICCID != iccid {
+		if w == nil || !w.hasICCID(iccid) {
 			continue
 		}
 		w.Stop()
@@ -169,7 +178,7 @@ func (m *Manager) GetWorkerByICCID(iccid string) *ModemWorker {
 		if w.IsStopped() {
 			continue
 		}
-		if w.modem != nil && w.modem.ICCID == iccid {
+		if w.hasICCID(iccid) {
 			return w
 		}
 	}

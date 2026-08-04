@@ -596,9 +596,6 @@ func (s *MCPHTTPServer) toolSendSMS(ctx context.Context, req *sdkmcp.CallToolReq
 	if w == nil {
 		return nil, mcpSendSMSOutput{}, errors.New("modem not active (worker not found)")
 	}
-	if w.IsBusy() {
-		return nil, mcpSendSMSOutput{}, errors.New("modem is busy")
-	}
 	if err := w.SendSMS(input.Phone, input.Message); err != nil {
 		return nil, mcpSendSMSOutput{}, fmt.Errorf("send SMS failed: %w", err)
 	}

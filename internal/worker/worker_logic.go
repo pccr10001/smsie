@@ -45,24 +45,22 @@ func (w *ModemWorker) logicLoop() {
 }
 
 func (w *ModemWorker) poll() {
-	if w.modem == nil {
-		return
+	err := w.runATTransaction(func(session *atSession) error {
+		if _, ok := w.modemSnapshot(); !ok || w.GetCallState().State != callStateIdle {
+			return nil
+		}
+		w.checkSignal(session)
+		w.checkSMS(session)
+		return nil
+	})
+	if err != nil && !w.IsStopped() {
+		logger.Log.Warnf("[%s] Poll transaction failed: %v", w.PortName, err)
 	}
-	if w.IsBusy() {
-		// Skip polling if busy with manual command
-		return
-	}
-	if w.GetCallState().State != callStateIdle {
-		// Skip polling during dialing/in-call to avoid AT flow interference
-		return
-	}
-	w.checkSignal()
-	w.checkSMS()
 }
 
-func (w *ModemWorker) checkOperator() {
+func (w *ModemWorker) checkOperator(session *atSession) {
 	// +COPS: 0,0,"Chunghwa Telecom",7
-	resp, err := w.ExecuteAT("AT+COPS?", 2*time.Second)
+	resp, err := session.execute("AT+COPS?", 2*time.Second, false)
 	if err != nil {
 		logger.Log.Errorf("[%s] Failed COPS: %v", w.PortName, err)
 		return
@@ -74,7 +72,9 @@ func (w *ModemWorker) checkOperator() {
 			// parts[0] = +COPS: 0,0,
 			// parts[1] = Chunghwa Telecom (Operator)
 			// parts[2] = ,7
-			w.modem.Operator = parts[1]
+			w.updateModem(func(modem *model.Modem) {
+				modem.Operator = parts[1]
+			})
 			// We delay saving to avoid aggressive DB writes, or just save
 			// w.repo.Upsert(w.modem)
 			// We are UPSERTING frequenly in signal check too.
@@ -82,16 +82,18 @@ func (w *ModemWorker) checkOperator() {
 	}
 }
 
-func (w *ModemWorker) checkSignal() {
+func (w *ModemWorker) checkSignal(session *atSession) {
 	// Registration drives whether operator should be shown.
-	regCode := w.checkRegistration()
+	regCode := w.checkRegistration(session)
 	if regCode == "1" || regCode == "5" {
-		w.checkOperator()
+		w.checkOperator(session)
 	} else if regCode != "" {
-		w.modem.Operator = ""
+		w.updateModem(func(modem *model.Modem) {
+			modem.Operator = ""
+		})
 	}
 
-	resp, err := w.ExecuteAT("AT+CSQ", 2*time.Second)
+	resp, err := session.execute("AT+CSQ", 2*time.Second, false)
 	if err != nil {
 		logger.Log.Errorf("[%s] Failed CSQ: %v", w.PortName, err)
 		return
@@ -115,15 +117,17 @@ func (w *ModemWorker) checkSignal() {
 					signal = int(float64(rssi) / 31.0 * 100.0)
 				}
 
-				w.modem.SignalStrength = signal
-				w.modem.LastSeen = time.Now()
+				w.updateModem(func(modem *model.Modem) {
+					modem.SignalStrength = signal
+					modem.LastSeen = time.Now()
+				})
 			}
 		}
 	}
 }
 
-func (w *ModemWorker) checkRegistration() string {
-	resp, err := w.ExecuteAT("AT+CREG?", 2*time.Second)
+func (w *ModemWorker) checkRegistration(session *atSession) string {
+	resp, err := session.execute("AT+CREG?", 2*time.Second, false)
 	if err != nil {
 		logger.Log.Errorf("[%s] Failed CREG: %v", w.PortName, err)
 		return ""
@@ -135,7 +139,9 @@ func (w *ModemWorker) checkRegistration() string {
 		return ""
 	}
 
-	w.modem.Registration = text
+	w.updateModem(func(modem *model.Modem) {
+		modem.Registration = text
+	})
 	return code
 }
 
@@ -176,9 +182,9 @@ func parseCREGStatus(resp string) (string, string, error) {
 	}
 }
 
-func (w *ModemWorker) checkSMS() {
+func (w *ModemWorker) checkSMS(session *atSession) {
 	// PDU mode read all
-	resp, err := w.ExecuteAT("AT+CMGL=4", 10*time.Second)
+	resp, err := session.execute("AT+CMGL=4", 10*time.Second, false)
 	if err != nil {
 		logger.Log.Errorf("[%s] Failed CMGL: %v", w.PortName, err)
 		return
@@ -187,26 +193,48 @@ func (w *ModemWorker) checkSMS() {
 		return // No messages
 	}
 
-	lines := strings.Split(resp, "\n")
-	var currentPDU string
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || line == "OK" {
-			continue
-		}
-		if !strings.HasPrefix(line, "+CMGL:") {
-			// Likely PDU
-			currentPDU = line
-			w.processPDU(currentPDU)
-		}
+	pdus, seenMessage := parseCMGLPDUs(resp, w.isURC)
+	for _, pdu := range pdus {
+		w.processPDU(pdu)
 	}
 
 	// Delete all messages after reading to avoid filling memory
 	// Warning: This deletes ALL messages. In production might want to delete by index.
-	if err := w.deleteReadMessages(lines); err != nil {
-		logger.Log.Warnf("[%s] Failed to delete messages: %v", w.PortName, err)
+	if seenMessage {
+		if err := w.deleteReadMessages(session); err != nil {
+			logger.Log.Warnf("[%s] Failed to delete messages: %v", w.PortName, err)
+		}
 	}
+}
+
+func parseCMGLPDUs(response string, isURC func(string) bool) ([]string, bool) {
+	var pdus []string
+	expectPDU := false
+	seenMessage := false
+
+	for _, line := range strings.Split(response, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line == "OK" {
+			continue
+		}
+		if strings.HasPrefix(line, "+CMGL:") {
+			expectPDU = true
+			seenMessage = true
+			continue
+		}
+		if isURC(line) {
+			continue
+		}
+		if !expectPDU {
+			continue
+		}
+		expectPDU = false
+		if _, err := hex.DecodeString(line); err == nil {
+			pdus = append(pdus, line)
+		}
+	}
+
+	return pdus, seenMessage
 }
 
 func (w *ModemWorker) processPDU(raw string) {
@@ -277,7 +305,7 @@ func (w *ModemWorker) processPDU(raw string) {
 	logger.Log.Infof("[%s] SMS From %s: %s", w.PortName, sender, content)
 
 	sms := &model.SMS{
-		ICCID:     w.modem.ICCID,
+		ICCID:     w.modemICCID(),
 		Phone:     sender,
 		Content:   content,
 		Timestamp: timestamp,
@@ -296,7 +324,7 @@ func (w *ModemWorker) processPDU(raw string) {
 	w.webhookService.Dispatch(sms)
 }
 
-func (w *ModemWorker) deleteReadMessages(lines []string) error {
+func (w *ModemWorker) deleteReadMessages(session *atSession) error {
 	// Instead of deleting all, we should iterate.
 	// But AT+CMGD=1,4 deletes all.
 	// The user asked to delete read messages.
@@ -305,6 +333,6 @@ func (w *ModemWorker) deleteReadMessages(lines []string) error {
 	// Or we can parse indices.
 	// For "read after delete", CMGD=1,4 is fine if we processed everything.
 
-	_, err := w.ExecuteAT("AT+CMGD=1,4", 5*time.Second)
+	_, err := session.execute("AT+CMGD=1,4", 5*time.Second, false)
 	return err
 }

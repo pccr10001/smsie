@@ -11,17 +11,21 @@ services:
       - smsie_data:/app/data
       # Uncomment if you want to use a local config.yaml
       # - ./config.yaml:/app/config.yaml
+      # Bind the host devtmpfs so device nodes created after USB hot-plug appear.
+      - type: bind
+        source: /dev
+        target: /dev
+        bind:
+          propagation: rslave
 
     # --- Modem Access Configuration ---
 
     # Option 1: Automatic Port Scanning & Hot-plug (Recommended for ease of use)
-    # Requires privileged mode and mapping /dev to detect changes.
+    # Requires privileged mode and a bind-mounted host /dev to detect changes.
     privileged: true
-    devices:
-      - /dev:/dev
 
     # Option 2: specific Device Mapping (More secure)
-    # If using this, comment out Option 1 and uncomment below.
+    # If using this, remove the /dev bind mount above and uncomment below.
     # Note: Hot-plugging will not work; container needs restart if modem changes.
     # devices:
     #   - /dev/ttyUSB0:/dev/ttyUSB0
